@@ -3,6 +3,8 @@ const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const CI_TASK_TYPE = 'scm-diff-stats-ci';
+
 let gitApi = null;
 
 function git(cwd, args) {
@@ -84,7 +86,7 @@ function countLines(file) {
   }
 }
 
-async function collectRepo(repoPath) {
+async function collectRepo(repoPath, testing) {
   const [unstagedOut, stagedOut, untrackedOut, branchOut, statusOut] = await Promise.all([
     git(repoPath, ['diff', '--numstat']),
     git(repoPath, ['diff', '--numstat', '--cached']),
@@ -164,6 +166,7 @@ async function collectRepo(repoPath) {
   const totals = sumFiles([...staged, ...unstaged, ...untracked]);
   const dirtyCount = staged.length + unstaged.length + untracked.length;
   const ci = await collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha);
+  const pr = await collectPr(repoPath, masterSha, testing);
   return {
     repoPath,
     name: path.basename(repoPath),
@@ -177,11 +180,142 @@ async function collectRepo(repoPath) {
     commitsLabel,
     upstream: aheadUpstream != null,
     ci,
+    pr,
   };
 }
 
 function ciCommandPath() {
   return (vscode.workspace.getConfiguration('scmDiffStats').get('ciCommand') || '').trim();
+}
+
+// Fallback page list for the preview button when the preview command printed
+// only the base URL: the PR's own docs/PR_N/urls_changed.md, read the way
+// scripts/ci reads it — one root-relative path per line, '#' and blanks out.
+function changedPagePaths(repoPath, number) {
+  if (!number) return [];
+  const file = path.join(repoPath, 'docs', 'PR_' + number, 'urls_changed.md');
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const paths = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line && !line.startsWith('#') && /^\/\S*$/.test(line) && !paths.includes(line)) {
+      paths.push(line);
+    }
+  }
+  return paths;
+}
+
+const SUMMARY_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){2}$/;
+const CASE_NUMBER_RE = /^[1-9][0-9]{0,6}$/;
+
+// `ci new` input: three lowercase words, optionally behind the Kylie case
+// number the PR works on — "#6654 three word summary" or "6654 three word …".
+// A slug whose own first token is numeric ("2fa token reset") still parses as
+// a slug: the case number only splits off when a space follows it.
+function parseNewSummary(value) {
+  const m = /^\s*(?:#?([1-9][0-9]{0,6})\s+)?(\S.*?)\s*$/.exec(value || '');
+  if (!m) return null;
+  const slug = m[2].replace(/\s+/g, '-');
+  return SUMMARY_SLUG_RE.test(slug) ? { caseNumber: m[1] || '', slug } : null;
+}
+
+// ── PR identity ─────────────────────────────────────────────────────────────
+// scripts/rename-session titles every agent session "pr-N [status]: <label>",
+// composed from scripts/ci state alone. The panel reads the same state, so a
+// PR row says exactly what the sessions working in it say. This is deliberately
+// independent of `ciCommand`: the label and the status are files on disk, and a
+// row should carry them whether or not the ci tool itself is wired up.
+
+function ciStateDir(repoPath) {
+  return path.join(path.dirname(repoPath), '.ci');
+}
+
+function readCiState(ciState, name) {
+  try {
+    return fs.readFileSync(path.join(ciState, name), 'utf8').trim();
+  } catch {
+    return null; // absent or unreadable sidecar: the PR simply lacks that fact
+  }
+}
+
+// A PR's human label: the three-word summary, behind "#<case> - " when `ci case`
+// recorded the Kylie case it works on. Null for a slug predating the summary
+// rule — the same fallback scripts/ci and scripts/rename-session make.
+function labelFrom(slug, caseNumber) {
+  if (!slug || !SUMMARY_SLUG_RE.test(slug)) return null;
+  const summary = slug.replace(/-/g, ' ');
+  return CASE_NUMBER_RE.test(caseNumber || '') ? '#' + caseNumber + ' - ' + summary : summary;
+}
+
+// Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so
+// one log per master revision answers for every row in the window.
+let landedCache = { sha: null, serials: new Set() };
+async function landedSerials(repoPath, masterSha) {
+  if (!masterSha) return new Set();
+  if (landedCache.sha === masterSha) return landedCache.serials;
+  const r = await gitFull(repoPath, ['log', '--format=%s', '-1000', masterSha]);
+  const serials = new Set();
+  for (const m of r.out.matchAll(/^PR (\d+) [—–-]/gm)) serials.add(+m[1]);
+  if (r.code === 0) landedCache = { sha: masterSha, serials };
+  return serials;
+}
+
+// PRs whose .ci/pr-N.lock a live process holds — a `ci test` / `ci land` run in
+// flight. The kernel already publishes every held flock in /proc/locks, keyed by
+// MAJOR:MINOR:INODE, so one small read plus a stat per PR row answers this: no
+// walk over every process, and the lock files themselves are never opened here,
+// so a starting ci run can never die on this probe. The presence of a lock file
+// says nothing — scripts/ci never unlinks them, so .ci keeps one for every PR it
+// has ever run; only the kernel's held set is evidence.
+function scanTestingSerials(prWorktrees) {
+  const held = new Set();
+  if (!prWorktrees.length) return held;
+  let text;
+  try { text = fs.readFileSync('/proc/locks', 'utf8'); } catch { return held; }
+  const locked = new Set();
+  for (const line of text.split('\n')) {
+    const f = line.trim().split(/\s+/);
+    // holders only: the kernel prefixes a blocked waiter's line with "-> "
+    if (f[1] === 'FLOCK' && f[5]) locked.add(f[5]);
+  }
+  if (!locked.size) return held;
+  for (const wt of prWorktrees) {
+    const serial = +path.basename(wt).slice(3);
+    let st;
+    try { st = fs.statSync(path.join(ciStateDir(wt), 'pr-' + serial + '.lock')); } catch { continue; }
+    const major = (st.dev >>> 8) & 0xfff;
+    const minor = (st.dev & 0xff) | ((st.dev >>> 12) & 0xfff00);
+    const key = major.toString(16).padStart(2, '0') + ':'
+      + minor.toString(16).padStart(2, '0') + ':' + st.ino;
+    if (locked.has(key)) held.add(serial);
+  }
+  return held;
+}
+
+// The PR identity of a worktree: its serial, the label CI recorded for it, and
+// its status in the precedence scripts/rename-session applies —
+// landed > testing > green > open. The worktree being on screen is what
+// rename-session reads as `open`, so a sibling .ci is the only thing a pr-N
+// folder needs to carry a status; "gone" cannot occur here for the same reason.
+async function collectPr(repoPath, masterSha, testing) {
+  const m = path.basename(repoPath).match(/^pr-(\d+)$/);
+  if (!m) return null;
+  const serial = +m[1];
+  const ciState = ciStateDir(repoPath);
+  const slug = readCiState(ciState, 'pr-' + serial + '.slug');
+  const label = labelFrom(slug, readCiState(ciState, 'pr-' + serial + '.case'));
+  const known = fs.existsSync(ciState); // an unrelated repo named pr-N stays untagged
+  let status = '';
+  if ((await landedSerials(repoPath, masterSha)).has(serial)) status = 'landed';
+  else if (testing && testing.has(serial)) status = 'testing';
+  else if (fs.existsSync(path.join(ciState, 'pr-' + serial + '.tested.json'))) status = 'green';
+  else if (known) status = 'open';
+  return (label || status) ? { serial, label, status } : null;
 }
 
 // Land-readiness of a scripts/ci PR worktree: the .ci/pr-N.tested.json green
@@ -194,12 +328,7 @@ async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
   const serial = +m[1];
   // only new-style PRs (with their docs/PR_N folder) — not old review worktrees
   if (!fs.existsSync(path.join(repoPath, 'docs', 'PR_' + serial))) return null;
-  const ciState = path.join(path.dirname(repoPath), '.ci');
-  let summary = '';
-  try {
-    const slug = fs.readFileSync(path.join(ciState, 'pr-' + serial + '.slug'), 'utf8').trim();
-    if (/^[a-z0-9]+(?:-[a-z0-9]+){2}$/.test(slug)) summary = slug.replace(/-/g, ' ');
-  } catch { /* pre-summary PR */ }
+  const ciState = ciStateDir(repoPath);
   let tested = null;
   try {
     tested = JSON.parse(fs.readFileSync(path.join(ciState, 'pr-' + serial + '.tested.json')));
@@ -217,7 +346,7 @@ async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
   } else {
     state = 'ready';
   }
-  return { serial, summary, state, reason, suite: tested && tested.suite, time: tested && tested.time };
+  return { serial, state, reason, suite: tested && tested.suite, time: tested && tested.time };
 }
 
 function getHtml(nonce) {
@@ -266,6 +395,12 @@ function getHtml(nonce) {
           font-family: inherit; font-size: .9em; height: 18px; line-height: 18px; flex: none; text-align: center; }
   .ibtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
   .ibtn.blocked { opacity: .45; }
+  .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
+  .prst-landed { color: var(--vscode-charts-blue, #75beff); }
+  .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
+  .prst-green { color: var(--vscode-charts-green, #89d185); }
+  .prst-open { color: var(--vscode-descriptionForeground); }
+  .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .cist { margin-left: 6px; flex: none; font-weight: 700; cursor: default; }
   .ci-ready { color: var(--vscode-charts-green, #89d185); }
   .ci-behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
@@ -288,6 +423,23 @@ state.collapsed = state.collapsed || {};
 state.drafts = state.drafts || {};
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// the status scripts/rename-session puts in every session title for this PR
+const PR_STATUS_TIP = {
+  landed: 'landed — master carries the squash commit for this PR',
+  testing: 'testing — a live ci test / ci land run holds the lock for this PR',
+  green: 'green — tested, awaiting land',
+  open: 'open — the worktree exists; no green test record yet',
+  gone: 'gone — CI knows this PR, but its worktree is gone',
+};
+
+// "[green] case number labels" — the session title's own label and status.
+// The status sits outside the dimmed label so its colour reads at full strength.
+function prTag(pr) {
+  if (!pr || !pr.status) return '';
+  return '<span class="prst prst-' + esc(pr.status) + '" title="'
+    + esc(PR_STATUS_TIP[pr.status] || pr.status) + '">[' + esc(pr.status) + ']</span>';
+}
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }
 
@@ -333,6 +485,7 @@ function row(depth, opts) {
   return '<div class="row ' + (opts.hdr ? 'hdr' : '') + '" style="padding-left:' + pad + 'px" data-act="' + esc(opts.act || '') + '">'
     + twist
     + '<span class="name">' + opts.name + '</span>'
+    + (opts.tag || '')
     + (opts.dim ? '<span class="dim">' + opts.dim + '</span>' : '')
     + (opts.btns || '')
     + '<span class="spacer"></span>'
@@ -371,16 +524,18 @@ function render() {
     const previewBtn = (!ci && previewEnabled && r.branch !== 'master')
       ? '<button class="sbtn pbtn" data-repo="' + esc(r.repoPath) + '" title="start the worktree preview server and open its changed pages (max 5) in the browser">▷ preview</button>'
       : '';
-    // collapsed repos summarize their diff vs master; expanded ones show working-tree totals
-    let repoDim = esc(rc && r.ci && r.ci.summary ? r.ci.summary : r.branch);
+    // A PR worktree's branch only ever repeats its folder name, so the row shows
+    // the CI label instead — the same text the sessions working here are titled
+    // with, collapsed or not. Everything else keeps naming its branch.
+    let repoDim = esc(r.pr && r.pr.label ? r.pr.label : r.branch);
     let repoCols = (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
       repoCols = cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
-    h += row(0, { hdr: true, twist: rc, name: esc(r.name), dim: repoDim, btns: ci + previewBtn + agentHtml,
-      cols: repoCols, act: 't|' + rid + '|0' });
+    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr), dim: repoDim,
+      btns: ci + previewBtn + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
     if (r.staged.length + r.unstaged.length + r.untracked.length > 0) {
@@ -745,27 +900,18 @@ class StatsViewProvider {
       }
       base = base.replace(/\/+$/, '');
 
-      // changed pages from the worktree's frontend-review manifests (at most 5):
-      // legacy .frontend-review.json plus numbered .frontend-review/NNNN-slug.json,
-      // later files superseding earlier entries for the same URL
-      const byUrl = new Set();
-      const addManifest = (file) => {
-        try {
-          const manifest = JSON.parse(fs.readFileSync(file));
-          for (const p of manifest.pages || []) {
-            if (typeof p.url === 'string' && p.url.startsWith('/')) byUrl.add(p.url);
-          }
-        } catch { /* ignore missing or unreadable manifests */ }
-      };
-      addManifest(path.join(repoPath, '.frontend-review.json'));
-      try {
-        const dir = path.join(repoPath, '.frontend-review');
-        for (const n of fs.readdirSync(dir).filter((n) => /^\d{4}(-[a-z0-9-]+)?\.json$/.test(n)).sort()) {
-          addManifest(path.join(dir, n));
-        }
-      } catch { /* no manifest directory */ }
-      const pages = [...byUrl];
-      const urls = (pages.length ? pages.slice(0, 5).map((u) => base + u) : [base]);
+      // The pages to open are the ones the preview command itself printed
+      // (`ci preview N status` lists every registered page under the base URL).
+      // Reading a checked-in manifest instead is what made preview open a long
+      // landed PR's pages against the current preview port.
+      const printed = new Set();
+      for (const raw of out.match(/https?:\/\/[^\s"'<>)\]]+/g) || []) {
+        const url = raw.replace(/[.,;]+$/, '');
+        if (url.startsWith(base + '/') && url !== base + '/') printed.add(url);
+      }
+      let pages = [...printed];
+      if (!pages.length) pages = changedPagePaths(repoPath, number).map((u) => base + u);
+      const urls = (pages.length ? pages.slice(0, 5) : [base]);
 
       const bcmd = this.browserCommand();
       if (bcmd) {
@@ -856,17 +1002,16 @@ class StatsViewProvider {
     let args;
     if (cmd === 'new') {
       const summary = await vscode.window.showInputBox({
-        prompt: 'Three-word PR summary (lowercase words)',
-        placeHolder: 'three word summary',
-        validateInput: (v) => {
-          const slug = v.trim().replace(/\s+/g, '-');
-          return /^[a-z0-9]+(?:-[a-z0-9]+){2}$/.test(slug)
-            ? null : 'enter exactly three lowercase letters/digits words';
-        },
+        prompt: 'Three-word PR summary, after the case number if this is case work',
+        placeHolder: '#6654 three word summary',
+        validateInput: (v) => (parseNewSummary(v) ? null
+          : 'enter exactly three lowercase letters/digits words, optionally '
+            + 'behind a case number (#6654 three word summary)'),
       });
       if (!summary) return;
-      const slug = summary.trim().replace(/\s+/g, '-');
-      args = ['new', slug];
+      const parsed = parseNewSummary(summary);
+      args = ['new', parsed.slug];
+      if (parsed.caseNumber) args.push('--case', parsed.caseNumber);
     } else if (!/^\d+$/.test(String(serial))) {
       return;
     } else if (cmd === 'test') {
@@ -876,11 +1021,26 @@ class StatsViewProvider {
     } else {
       return;
     }
-    // a real terminal: land's TTY gate and confirmation prompt need one,
-    // and test/preview output stays visible and interactive
-    const term = vscode.window.createTerminal({ name: 'ci ' + args.join(' '), cwd: repoPath });
-    term.show();
-    term.sendText("'" + ci + "' " + args.join(' '));
+    // Python auto-activation can interrupt commands sent to a new shell.
+    // Process tasks retain a TTY without racing shell activation.
+    const task = new vscode.Task(
+      { type: CI_TASK_TYPE, repoPath, args },
+      vscode.TaskScope.Workspace,
+      'ci ' + args.join(' '),
+      'Diff Stats',
+      new vscode.ProcessExecution(ci, args, { cwd: repoPath }),
+      []
+    );
+    task.presentationOptions = {
+      reveal: vscode.TaskRevealKind.Always,
+      focus: true,
+      panel: vscode.TaskPanelKind.Dedicated,
+    };
+    try {
+      await vscode.tasks.executeTask(task);
+    } catch (e) {
+      vscode.window.showErrorMessage(`${task.name}: ${e.message}`);
+    }
   }
 
   setRepos(paths) {
@@ -890,7 +1050,10 @@ class StatsViewProvider {
 
   async refresh() {
     this.agents = scanAgents(this.repos);
-    const results = await Promise.all(this.repos.map((r) => collectRepo(r).catch(() => null)));
+    // one /proc/locks read for the whole window
+    const testing = scanTestingSerials(
+      this.repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
+    const results = await Promise.all(this.repos.map((r) => collectRepo(r, testing).catch(() => null)));
     this.data.clear();
     this.fileStats.clear();
     for (const d of results) {
@@ -1082,8 +1245,8 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(repoPoll) });
 
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(scheduleRefresh));
-  context.subscriptions.push(vscode.window.onDidCloseTerminal((t) => {
-    if (t.name && t.name.startsWith('ci ')) scheduleRefresh();
+  context.subscriptions.push(vscode.tasks.onDidEndTaskProcess((e) => {
+    if (e.execution.task.definition.type === CI_TASK_TYPE) scheduleRefresh();
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('scmDiffStats')) provider.refresh();

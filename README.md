@@ -6,9 +6,11 @@ For every repository / git worktree open in the workspace:
 
 - **Staged / Changes** — each file with green `+added` / red `−deleted` line counts in aligned columns next to a colored git status letter (M/A/D/R/U). Untracked files count their lines as additions. Clicking a file opens its diff.
 - **Vs master** — for branches other than `master`: how many commits the branch is **behind master** (red `↓N`), total `+x −y` relative to the merge base (`git diff master...HEAD`, so master moving ahead doesn't pollute the numbers), and a per-file drill-down; clicking opens a merge-base ↔ working-tree diff.
+- **PR identity** — a `pr-N` worktree row carries the label and status its agent sessions are titled with (`pr-N [green]: case number labels`), read straight from the CI state beside the worktrees: the three lowercase words of `.ci/pr-N.slug`, behind `#<case> - ` when `ci case N <number>` recorded one, and a coloured `[landed]` / `[testing]` / `[green]` / `[open]` marker. This needs no `ciCommand` — that setting only gates the CI buttons. The ✚ button accepts the case number in front of the three words (`#6654 three word summary`).
 - **Commits** — outgoing commits when an upstream exists, otherwise the most recent ones, each with `+x −y` vs its parent. Expanding a commit lazy-loads its files; clicking opens the parent ↔ commit diff for that file.
 - Hover tooltips with `+x −y` on the **built-in** SCM rows (via a `FileDecorationProvider`).
 - Auto-refreshes on git state changes and file saves; manual ↻ button in the panel title.
+- CI buttons use interactive process task terminals so Python shell auto-activation cannot interrupt command startup. The panel refreshes when a CI task finishes.
 
 The panel is a webview (custom HTML/CSS) — that is what allows colors and aligned columns, at the cost of the file-icon-theme glyphs a native tree would have.
 
@@ -25,6 +27,8 @@ and reload the window. If the panel doesn't appear, it's collapsed at the bottom
 ## Develop
 
 Everything lives in `extension/extension.js` (plain JS, no build step, no dependencies).
+
+Run the launcher regression tests with Node.js 18 or newer: `node extension/tests/ci.test.js`.
 
 ```bash
 ./build.sh   # zips the vsix and reinstalls it locally; then reload the window

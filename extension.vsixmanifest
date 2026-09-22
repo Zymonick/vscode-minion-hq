@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="scm-diff-stats" Version="0.11.8" Publisher="simon"/>
-    <DisplayName>SCM Diff Stats</DisplayName>
-    <Description xml:space="preserve">Per-file +/- line stats for working tree changes and recent commits, per repo/worktree.</Description>
+    <Identity Language="en-US" Id="scm-diff-stats" Version="0.13.0" Publisher="simon"/>
+    <DisplayName>Minion HQ</DisplayName>
+    <Description xml:space="preserve">A command center for your worktrees, diffs, and branch tools.</Description>
     <Categories>Other</Categories>
     <Properties>
       <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.75.0"/>

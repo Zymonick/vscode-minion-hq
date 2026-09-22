@@ -1,15 +1,22 @@
 const vscode = require('vscode');
 const cp = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const CI_TASK_TYPE = 'scm-diff-stats-ci';
+const REPO_CONCURRENCY = 2;
+const MAX_UNTRACKED_BYTES = 5 * 1024 * 1024;
 
 let gitApi = null;
 
 function git(cwd, args) {
   return new Promise((resolve) => {
-    cp.execFile('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+    // Read-only status checks must not rewrite the index and trigger Git watchers.
+    cp.execFile('git', args, {
+      cwd, maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }, (err, stdout) => {
       resolve(err ? '' : stdout);
     });
   });
@@ -59,6 +66,17 @@ function parseNameStatus(out) {
   return map;
 }
 
+// the old path of every rename/copy in `--name-status --find-renames` output,
+// keyed by the new path — the base-side name of a moved file
+function parseRenames(out) {
+  const map = {};
+  for (const line of out.split('\n')) {
+    const m = line.match(/^[RC]\d*\t(.*)\t(.*)$/);
+    if (m) map[m[2]] = m[1];
+  }
+  return map;
+}
+
 function parseShortstatLine(line) {
   const add = (line.match(/(\d+) insertion/) || [])[1];
   const del = (line.match(/(\d+) deletion/) || [])[1];
@@ -70,15 +88,15 @@ function sumFiles(files) {
   return files.reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
 }
 
-function countLines(file) {
+async function countLines(file) {
   try {
-    const st = fs.statSync(file);
-    if (!st.isFile() || st.size > 5 * 1024 * 1024) return null;
-    const buf = fs.readFileSync(file);
+    const st = await fs.promises.stat(file);
+    if (!st.isFile() || st.size > MAX_UNTRACKED_BYTES) return null;
+    const buf = await fs.promises.readFile(file);
     if (buf.includes(0)) return null;
     if (buf.length === 0) return 0;
     let n = 0;
-    for (const b of buf) if (b === 10) n++;
+    for (let i = buf.indexOf(10); i !== -1; i = buf.indexOf(10, i + 1)) n++;
     if (buf[buf.length - 1] !== 10) n++;
     return n;
   } catch {
@@ -111,10 +129,11 @@ async function collectRepo(repoPath, testing) {
     files.map((f) => ({ ...f, letter: letters[f.path] || fallback }));
   const unstaged = withLetter(parseNumstat(unstagedOut), wtLetter, 'M');
   const staged = withLetter(parseNumstat(stagedOut), idxLetter, 'M');
-  const untracked = untrackedOut.split('\n').filter(Boolean).map((p) => {
-    const n = countLines(path.join(repoPath, p));
-    return { path: p, add: n, del: n == null ? null : 0, binary: n == null, untracked: true, letter: 'U' };
-  });
+  const untracked = [];
+  for (const p of untrackedOut.split('\n').filter(Boolean)) {
+    const n = await countLines(path.join(repoPath, p));
+    untracked.push({ path: p, add: n, del: n == null ? null : 0, binary: n == null, untracked: true, letter: 'U' });
+  }
 
   let vsMaster = null;
   let masterSha = '';
@@ -129,12 +148,17 @@ async function collectRepo(repoPath, testing) {
         git(repoPath, ['diff', '--name-status', '--find-renames', 'master...HEAD']),
       ]);
       const files = withLetter(parseNumstat(numstatOut), parseNameStatus(nameStatusOut), 'M');
+      const mergeBase = mbOut.trim();
       vsMaster = {
         behind: +behindOut.trim() || 0,
         ahead: +aheadOut.trim() || 0,
-        mergeBase: mbOut.trim(),
+        mergeBase,
         files,
         totals: sumFiles(files),
+        cx: await collectComplexity(repoPath, mergeBase, files, parseRenames(nameStatusOut)).catch((e) => {
+          log('complexity: ' + path.basename(repoPath) + ': ' + e.message);
+          return null;
+        }),
       };
     }
   }
@@ -222,6 +246,54 @@ function parseNewSummary(value) {
   if (!m) return null;
   const slug = m[2].replace(/\s+/g, '-');
   return SUMMARY_SLUG_RE.test(slug) ? { caseNumber: m[1] || '', slug } : null;
+}
+
+// ── Excluded worktrees ──────────────────────────────────────────────────────
+// A repository's worktree list also carries checkouts that are nobody's work:
+// scratch clones an agent tool made for itself, a CI verify worktree. Those
+// rows are noise, and `scmDiffStats.excludePaths` drops them: each pattern is
+// matched against the worktree's absolute path and against its folder name,
+// with `*` (one path segment) and `**` (any) as the only wildcards; a pattern
+// without a wildcard also excludes everything under it.
+function globToRegExp(pattern) {
+  let re = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        re += '.*';
+        i++;
+        if (pattern[i + 1] === '/') i++;
+      } else {
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp('^' + re + '$');
+}
+
+function excludedPath(p, patterns) {
+  const base = path.basename(p);
+  for (const raw of patterns) {
+    const pat = String(raw).trim().replace(/\/+$/, '');
+    if (!pat) continue;
+    if (/[*?]/.test(pat)) {
+      const re = globToRegExp(pat);
+      if (re.test(p) || re.test(base)) return true;
+    } else if (p === pat || base === pat || p.startsWith(pat + '/')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function excludePatterns() {
+  const v = vscode.workspace.getConfiguration('scmDiffStats').get('excludePaths');
+  return Array.isArray(v) ? v : [];
 }
 
 // ── PR identity ─────────────────────────────────────────────────────────────
@@ -349,6 +421,244 @@ async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
   return { serial, state, reason, suite: tested && tested.suite, time: tested && tested.time };
 }
 
+// ── Complexity vs master ────────────────────────────────────────────────────
+// `qlty metrics` (https://qlty.sh) scores every changed source file at the
+// merge base and at HEAD; the panel shows the difference, so a PR row says how
+// much harder to read its code got, not only how much longer. qlty only runs
+// inside a git repository carrying `.qlty/qlty.toml`, and the project must stay
+// untouched, so the blobs are analysed in a private scratch repository under
+// the OS temp dir. A blob's score never changes, so each git object id is
+// scored once and kept in a cache file beside the scratch repo; a refresh with
+// nothing new costs two `git ls-tree` calls and no qlty run.
+const QLTY_EXTS = new Set(['py', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'java', 'rb', 'go', 'rs',
+  'php', 'kt', 'kts', 'swift', 'cs', 'scala', 'c', 'cc', 'cpp', 'h', 'hpp']);
+const QLTY_CACHE_MAX = 5000;
+let logChannel = null;
+let qltyRootPromise = null;
+let qltyCache = null;
+let qltyMissing = ''; // the command that failed to spawn; retried once the setting changes
+
+function log(line) {
+  if (logChannel) logChannel.appendLine(line);
+}
+
+function qltyCommandPath() {
+  const set = (vscode.workspace.getConfiguration('scmDiffStats').get('qltyCommand') || '').trim();
+  if (set) return set;
+  const home = path.join(process.env.HOME || '', '.qlty', 'bin', 'qlty');
+  return fs.existsSync(home) ? home : 'qlty';
+}
+
+// the extension a blob is scored under — qlty picks the language from it —
+// or null for a file type qlty metrics does not score (templates, docs, …)
+function qltyExt(p) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(p);
+  const ext = m ? m[1].toLowerCase() : '';
+  return QLTY_EXTS.has(ext) ? ext : null;
+}
+
+function qltyRoot() {
+  if (!qltyRootPromise) {
+    qltyRootPromise = (async () => {
+      const root = path.join(os.tmpdir(), 'scm-diff-stats-qlty');
+      fs.mkdirSync(path.join(root, '.qlty'), { recursive: true });
+      const toml = path.join(root, '.qlty', 'qlty.toml');
+      if (!fs.existsSync(toml)) fs.writeFileSync(toml, 'config_version = "0"\n');
+      if (!fs.existsSync(path.join(root, '.git')) && (await gitFull(root, ['init', '-q'])).code !== 0) {
+        throw new Error('git init failed in ' + root);
+      }
+      return root;
+    })().catch((e) => {
+      qltyRootPromise = null; // the next refresh tries again
+      log('complexity: ' + e.message);
+      return null;
+    });
+  }
+  return qltyRootPromise;
+}
+
+function qltyCacheLoad(root) {
+  if (qltyCache) return qltyCache;
+  qltyCache = new Map();
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'cache.json'), 'utf8'));
+    for (const [k, v] of Object.entries(saved)) qltyCache.set(k, v);
+  } catch { /* no cache yet */ }
+  return qltyCache;
+}
+
+function qltyCacheSave(root) {
+  while (qltyCache.size > QLTY_CACHE_MAX) qltyCache.delete(qltyCache.keys().next().value);
+  try {
+    fs.writeFileSync(path.join(root, 'cache.json'), JSON.stringify(Object.fromEntries(qltyCache)));
+  } catch { /* the cache is a convenience */ }
+}
+
+// The `qlty metrics` table — "name | classes | funcs | fields | cyclo | complex
+// | LCOM | lines | LOC", one row per scored file, ANSI colour stripped (qlty
+// emits it even when piped) — as a Map from the row's file name to its numbers.
+function parseQltyTable(out) {
+  const rows = new Map();
+  let cols = null;
+  for (const raw of out.replace(/\x1b\[[0-9;]*m/g, '').split('\n')) {
+    if (!raw.includes('|')) continue;
+    const cells = raw.split('|').map((c) => c.trim());
+    if (!cols) {
+      if (cells[0] === 'name') cols = cells;
+      continue;
+    }
+    if (cells.length !== cols.length || cells[0] === 'TOTAL') continue;
+    const row = {};
+    for (let i = 1; i < cols.length; i++) row[cols[i]] = +cells[i];
+    rows.set(path.basename(cells[0]), row);
+  }
+  return rows;
+}
+
+// object id of every listed path in a tree; absent paths are simply missing
+async function treeBlobs(repoPath, tree, paths) {
+  const map = new Map();
+  if (!paths.length) return map;
+  const out = await git(repoPath, ['ls-tree', '-z', tree, '--', ...paths]);
+  for (const entry of out.split('\0')) {
+    const m = entry.match(/^\d+ blob ([0-9a-f]+)\t([^]*)$/);
+    if (m) map.set(m[2], m[1]);
+  }
+  return map;
+}
+
+// contents of many blobs from one `git cat-file --batch` call
+function catBlobs(repoPath, oids) {
+  return new Promise((resolve) => {
+    const map = new Map();
+    if (!oids.length) { resolve(map); return; }
+    const chunks = [];
+    const child = cp.spawn('git', ['cat-file', '--batch'], { cwd: repoPath });
+    child.stdout.on('data', (b) => chunks.push(b));
+    child.on('error', () => resolve(map));
+    child.on('close', () => {
+      const buf = Buffer.concat(chunks);
+      let i = 0;
+      while (i < buf.length) {
+        const nl = buf.indexOf(10, i);
+        if (nl < 0) break;
+        const hdr = buf.toString('utf8', i, nl).split(' ');
+        i = nl + 1;
+        if (hdr[1] !== 'blob') continue; // "<oid> missing"
+        const size = +hdr[2];
+        map.set(hdr[0], buf.subarray(i, i + size));
+        i += size + 1;
+      }
+      resolve(map);
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(oids.join('\n') + '\n');
+  });
+}
+
+function qltyRun(cmd, root, files) {
+  return new Promise((resolve) => {
+    cp.execFile(cmd, ['metrics', '--no-upgrade-check', '--quiet', ...files],
+      { cwd: root, maxBuffer: 16 * 1024 * 1024, timeout: 120000 },
+      (err, stdout, stderr) => resolve({ err, out: stdout || '', errOut: stderr || '' }));
+  });
+}
+
+// Per-file deltas from the scored sides: `scored` holds one entry per file
+// with its qlty row at HEAD and at the merge base (null where the file does
+// not exist on that side or qlty produced no row). Files qlty scored on
+// neither side get no `cx` and do not count; an added or deleted file counts
+// from or to zero.
+function complexityTotals(scored) {
+  const total = { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 };
+  for (const { f, head, base } of scored) {
+    if (!head && !base) continue;
+    const h = head || { complex: 0, cyclo: 0 };
+    const b = base || { complex: 0, cyclo: 0 };
+    f.cx = { cognitive: h.complex - b.complex, cyclo: h.cyclo - b.cyclo, head: h.complex, base: b.complex };
+    total.cognitive += f.cx.cognitive;
+    total.cyclo += f.cx.cyclo;
+    total.head += h.complex;
+    total.base += b.complex;
+    total.files++;
+  }
+  return total;
+}
+
+// Scores the branch's changed files at the merge base and at HEAD (the same
+// two sides the +/- numbers compare), adds `cx` to each scored file and returns
+// the totals — null when qlty is unavailable or the run failed, so the column
+// simply stays away.
+async function collectComplexity(repoPath, mergeBase, files, renames) {
+  const cmd = qltyCommandPath();
+  if (!cmd || cmd === qltyMissing || !mergeBase) return null;
+  const root = await qltyRoot();
+  if (!root) return null;
+  const wanted = [];
+  for (const f of files) {
+    if (f.binary) continue;
+    const ext = qltyExt(f.path);
+    if (!ext) continue;
+    const old = renames[f.path] || f.path;
+    wanted.push({ f, side: 'head', path: f.path, ext });
+    wanted.push({ f, side: 'base', path: old, ext: qltyExt(old) || ext });
+  }
+  if (!wanted.length) return complexityTotals([]);
+  const paths = (side) => [...new Set(wanted.filter((w) => w.side === side).map((w) => w.path))];
+  const [headIds, baseIds] = await Promise.all([
+    treeBlobs(repoPath, 'HEAD', paths('head')),
+    treeBlobs(repoPath, mergeBase, paths('base')),
+  ]);
+  for (const w of wanted) {
+    w.oid = (w.side === 'head' ? headIds : baseIds).get(w.path) || null;
+    w.key = w.oid ? w.oid + '.' + w.ext : null;
+  }
+  const cache = qltyCacheLoad(root);
+  const missing = new Map();
+  for (const w of wanted) if (w.key && !cache.has(w.key)) missing.set(w.key, w.oid);
+  if (missing.size) {
+    const run = path.join(root, 'blobs', process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+    fs.mkdirSync(run, { recursive: true });
+    try {
+      const blobs = await catBlobs(repoPath, [...new Set(missing.values())]);
+      const names = [];
+      for (const [name, oid] of missing) {
+        const content = blobs.get(oid);
+        if (!content) continue;
+        fs.writeFileSync(path.join(run, name), content);
+        names.push(path.relative(root, path.join(run, name)));
+      }
+      if (names.length) {
+        const r = await qltyRun(cmd, root, names);
+        if (r.err && r.err.code === 'ENOENT') {
+          qltyMissing = cmd;
+          log('complexity: ' + cmd + ' not found — install qlty (https://qlty.sh) or set scmDiffStats.qltyCommand');
+          return null;
+        }
+        if (r.err) {
+          log('complexity: qlty failed in ' + path.basename(repoPath) + ' — ' + (r.errOut || r.err.message).trim().slice(0, 300));
+          return null;
+        }
+        const rows = parseQltyTable(r.out);
+        for (const rel of names) {
+          const name = path.basename(rel);
+          cache.set(name, rows.get(name) || null);
+        }
+        qltyCacheSave(root);
+      }
+    } finally {
+      fs.rmSync(run, { recursive: true, force: true });
+    }
+  }
+  const sides = new Map();
+  for (const w of wanted) {
+    const s = sides.get(w.f) || { f: w.f, head: null, base: null };
+    s[w.side] = (w.key && cache.get(w.key)) || null;
+    sides.set(w.f, s);
+  }
+  return complexityTotals([...sides.values()]);
+}
+
 function getHtml(nonce) {
   return `<!DOCTYPE html>
 <html>
@@ -368,6 +678,11 @@ function getHtml(nonce) {
   .add, .del { width: 3.6em; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
   .add { color: var(--vscode-gitDecoration-addedResourceForeground); }
   .del { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+  .cx { width: 4.8em; flex: none; text-align: right; font-variant-numeric: tabular-nums; margin-right: 4px; }
+  .cxl { opacity: .55; font-size: .85em; margin-right: 3px; }
+  .cx-up { color: var(--vscode-charts-orange, #d18616); }
+  .cx-down { color: var(--vscode-charts-green, #89d185); }
+  .cx-zero { opacity: .6; }
   .st-M { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
   .st-A, .st-U { color: var(--vscode-gitDecoration-untrackedResourceForeground); }
   .st-D { color: var(--vscode-gitDecoration-deletedResourceForeground); }
@@ -478,6 +793,20 @@ function cols(add, del, letter, binary) {
   return st + a + d;
 }
 
+// The qlty complexity change of one file or of the whole branch vs master:
+// undefined → no cell (the branch was not scored), null → an empty cell (a file
+// qlty does not score) so the +/- columns keep their place.
+function signed(v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v); }
+function cxCell(cx) {
+  if (cx === undefined) return '';
+  if (!cx) return '<span class="cx"></span>';
+  const n = cx.cognitive;
+  const cls = n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
+  const tip = 'cognitive complexity ' + cx.base + ' → ' + cx.head + ' (' + signed(n) + '), cyclomatic '
+    + signed(cx.cyclo) + ' — qlty metrics, merge base vs HEAD';
+  return '<span class="cx ' + cls + '" title="' + esc(tip) + '"><span class="cxl">cx</span>' + signed(n) + '</span>';
+}
+
 function row(depth, opts) {
   const pad = 4 + depth * 14;
   const twist = opts.twist === undefined ? '<span class="twist"></span>'
@@ -493,12 +822,12 @@ function row(depth, opts) {
     + '</div>';
 }
 
-function fileRow(depth, repoPath, f, act) {
+function fileRow(depth, repoPath, f, act, lead) {
   const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
   return row(depth, {
     name: esc(f.path.split('/').pop()),
     dim: esc(dir),
-    cols: cols(f.add, f.del, f.letter, f.binary),
+    cols: (lead || '') + cols(f.add, f.del, f.letter, f.binary),
     act,
   });
 }
@@ -531,7 +860,7 @@ function render() {
     let repoCols = (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
-      repoCols = cols(v.totals.add, v.totals.del, null, false);
+      repoCols = cxCell(v.cx && v.cx.files ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr), dim: repoDim,
@@ -571,11 +900,13 @@ function render() {
         ? '<span class="behind">↓' + v.behind + ' behind master</span>'
         : 'not behind master';
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
-        dim: behind + ' · ↑' + v.ahead, cols: cols(v.totals.add, v.totals.del, null, false),
+        dim: behind + ' · ↑' + v.ahead,
+        cols: cxCell(v.cx && v.cx.files ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
         btns: (syncEnabled && !r.ci) ? '<button class="sbtn" data-repo="' + esc(r.repoPath) + '" title="merge master in, run the full test suite, launch a fix agent on failure">⇣ sync + test</button>' : '',
         act: 't|' + vid + '|0' });
       if (!vc) for (const f of v.files) {
-        h += fileRow(2, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path);
+        h += fileRow(2, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
+          v.cx ? cxCell(f.cx || null) : '');
       }
     }
 
@@ -825,7 +1156,10 @@ class StatsViewProvider {
     this.fileStats = new Map();
     this.running = new Set();
     this.agents = {};
-    this.channel = vscode.window.createOutputChannel('Diff Stats');
+    this.refreshPromise = null;
+    this.refreshPending = false;
+    this.channel = vscode.window.createOutputChannel('Minion HQ');
+    logChannel = this.channel;
   }
 
   syncCommand() {
@@ -882,7 +1216,7 @@ class StatsViewProvider {
       );
       if (code !== 0) {
         this.channel.show(true);
-        vscode.window.showErrorMessage(`${name}: preview command failed — see the Diff Stats output.`);
+        vscode.window.showErrorMessage(`${name}: preview command failed — see the Minion HQ output.`);
         return;
       }
       // base URL: prefer this worktree's status line, else the last URL printed
@@ -1027,7 +1361,7 @@ class StatsViewProvider {
       { type: CI_TASK_TYPE, repoPath, args },
       vscode.TaskScope.Workspace,
       'ci ' + args.join(' '),
-      'Diff Stats',
+      'Minion HQ',
       new vscode.ProcessExecution(ci, args, { cwd: repoPath }),
       []
     );
@@ -1048,22 +1382,45 @@ class StatsViewProvider {
     this.refresh();
   }
 
-  async refresh() {
-    this.agents = scanAgents(this.repos);
-    // one /proc/locks read for the whole window
-    const testing = scanTestingSerials(
-      this.repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
-    const results = await Promise.all(this.repos.map((r) => collectRepo(r, testing).catch(() => null)));
-    this.data.clear();
-    this.fileStats.clear();
-    for (const d of results) {
-      if (!d) continue;
-      this.data.set(d.repoPath, d);
-      for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
-        this.fileStats.set(path.join(d.repoPath, f.path), f);
+  refresh() {
+    this.refreshPending = true;
+    if (this.refreshPromise) return this.refreshPromise;
+
+    this.refreshPromise = Promise.resolve().then(async () => {
+      // Changes during collection request one follow-up, never another parallel scan.
+      while (this.refreshPending) {
+        this.refreshPending = false;
+        const repos = [...this.repos];
+        this.agents = scanAgents(repos);
+        const testing = scanTestingSerials(
+          repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
+        const results = new Array(repos.length);
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(REPO_CONCURRENCY, repos.length) }, async () => {
+          while (next < repos.length) {
+            const i = next++;
+            results[i] = await collectRepo(repos[i], testing).catch(() => null);
+          }
+        }));
+
+        if (repos.length !== this.repos.length || repos.some((r, i) => r !== this.repos[i])) continue;
+
+        this.data.clear();
+        this.fileStats.clear();
+        for (const d of results) {
+          if (!d) continue;
+          this.data.set(d.repoPath, d);
+          for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
+            this.fileStats.set(path.join(d.repoPath, f.path), f);
+          }
+        }
+        this.push();
       }
-    }
-    this.push();
+    }).catch((e) => log('refresh: ' + e.message)).finally(() => {
+      this.refreshPromise = null;
+      if (this.refreshPending) return this.refresh();
+    });
+    return this.refreshPromise;
   }
 
   push() {
@@ -1177,6 +1534,8 @@ function activate(context) {
   );
 
   let timer;
+  // replaced once the repository source is known (git API, else workspace folders)
+  let syncRepos = () => provider.refresh();
   const scheduleRefresh = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -1197,7 +1556,8 @@ function activate(context) {
         }
       }
     }
-    return [...all];
+    const patterns = excludePatterns();
+    return [...all].filter((p) => !excludedPath(p, patterns));
   };
 
   const wireGitApi = async () => {
@@ -1206,6 +1566,7 @@ function activate(context) {
     gitApi = (await gitExt.activate()).getAPI(1);
     const sync = () =>
       expandWorktrees(gitApi.repositories.map((r) => r.rootUri.fsPath)).then((ps) => provider.setRepos(ps));
+    syncRepos = sync;
     context.subscriptions.push(gitApi.onDidOpenRepository((repo) => {
       context.subscriptions.push(repo.state.onDidChange(scheduleRefresh));
       sync();
@@ -1218,12 +1579,17 @@ function activate(context) {
     return gitApi.repositories.length > 0;
   };
 
+  const syncFolders = () => {
+    const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+    return Promise.all(
+      folders.map(async (f) => ((await git(f, ['rev-parse', '--is-inside-work-tree'])).trim() === 'true' ? f : null))
+    ).then((rs) => expandWorktrees(rs.filter(Boolean))).then((ps) => provider.setRepos(ps));
+  };
+
   wireGitApi().then((ok) => {
     if (!ok) {
-      const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
-      Promise.all(
-        folders.map(async (f) => ((await git(f, ['rev-parse', '--is-inside-work-tree'])).trim() === 'true' ? f : null))
-      ).then((rs) => expandWorktrees(rs.filter(Boolean))).then((ps) => provider.setRepos(ps));
+      syncRepos = syncFolders;
+      syncFolders();
     }
   });
 
@@ -1249,7 +1615,9 @@ function activate(context) {
     if (e.execution.task.definition.type === CI_TASK_TYPE) scheduleRefresh();
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('scmDiffStats')) provider.refresh();
+    // a changed exclude list changes which worktrees have rows at all
+    if (e.affectsConfiguration('scmDiffStats.excludePaths')) syncRepos();
+    else if (e.affectsConfiguration('scmDiffStats')) provider.refresh();
   }));
 
   const agentPoll = setInterval(() => {

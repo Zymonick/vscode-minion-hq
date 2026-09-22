@@ -1,34 +1,56 @@
 {
   "name": "scm-diff-stats",
-  "displayName": "SCM Diff Stats",
-  "description": "Per-file +/- line stats for working tree changes and recent commits, per repo/worktree.",
-  "version": "0.11.8",
+  "displayName": "Minion HQ",
+  "description": "A command center for your worktrees, diffs, and branch tools.",
+  "version": "0.13.0",
   "publisher": "simon",
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
-        { "id": "diffStats", "title": "Diff Stats", "icon": "media/diff-stats.svg" }
+        {
+          "id": "diffStats",
+          "title": "Minion HQ",
+          "icon": "media/diff-stats.svg"
+        }
       ]
     },
     "views": {
       "diffStats": [
-        { "type": "webview", "id": "scmDiffStats", "name": "Diff Stats" }
+        {
+          "type": "webview",
+          "id": "scmDiffStats",
+          "name": "Minion HQ"
+        }
       ]
     },
     "commands": [
-      { "command": "scmDiffStats.refresh", "title": "Refresh Diff Stats", "icon": "$(refresh)" }
+      {
+        "command": "scmDiffStats.refresh",
+        "title": "Refresh Minion HQ",
+        "icon": "$(refresh)"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "scmDiffStats.refresh", "when": "view == scmDiffStats", "group": "navigation" }
+        {
+          "command": "scmDiffStats.refresh",
+          "when": "view == scmDiffStats",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
-      "title": "SCM Diff Stats",
+      "title": "Minion HQ",
       "properties": {
         "scmDiffStats.ciCommand": {
           "type": "string",
@@ -49,6 +71,17 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Shell command used to open the preview pages. `${urls}` is replaced with the quoted URLs. Empty falls back to the OS default browser (one call per URL, no window grouping)."
+        },
+        "scmDiffStats.excludePaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "Worktree paths that get no row. Each pattern is matched against the worktree's absolute path and against its folder name; `*` matches inside one path segment, `**` across segments, and a pattern without a wildcard also excludes everything under it. Use it to hide checkouts that are nobody's work — an agent tool's scratch clones (`**/.codex/worktrees/**`), a CI verify worktree."
+        },
+        "scmDiffStats.qltyCommand": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: the cognitive-complexity change of every file vs master and the branch total, from `qlty metrics` at the merge base and at HEAD. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
         }
       }
     }

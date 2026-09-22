@@ -77,15 +77,10 @@ function parseRenames(out) {
   return map;
 }
 
-function parseShortstatLine(line) {
-  const add = (line.match(/(\d+) insertion/) || [])[1];
-  const del = (line.match(/(\d+) deletion/) || [])[1];
-  const filesChanged = (line.match(/(\d+) files? changed/) || [])[1];
-  return { add: add ? +add : 0, del: del ? +del : 0, files: filesChanged ? +filesChanged : 0 };
-}
-
 function sumFiles(files) {
-  return files.reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
+  // Git quotes paths containing non-ASCII or special characters.
+  return files.filter((f) => !f.path.startsWith('docs/') && !f.path.startsWith('"docs/'))
+    .reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
 }
 
 async function countLines(file) {
@@ -168,17 +163,16 @@ async function collectRepo(repoPath, testing) {
 
   // branch repos: only commits not already on master; master itself: recent history
   const logOut = vsMaster
-    ? await git(repoPath, ['log', '-n', '50', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--shortstat', 'master..HEAD'])
-    : await git(repoPath, ['log', '-n', '30', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--shortstat']);
+    ? await git(repoPath, ['log', '-n', '50', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--numstat', 'master..HEAD'])
+    : await git(repoPath, ['log', '-n', '30', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--numstat']);
 
   const commits = [];
   for (const entry of logOut.split('\x01')) {
     if (!entry.trim()) continue;
     const lines = entry.split('\n');
     const [hash, short, subject, when] = lines[0].split('\x02');
-    const statLine = (lines.slice(1).join('\n').match(/\d+ files? changed[^\n]*/) || [''])[0];
-    const s = statLine ? parseShortstatLine(statLine) : { add: 0, del: 0, files: 0 };
-    commits.push({ hash, short, subject, when, ...s });
+    const files = parseNumstat(lines.slice(1).join('\n'));
+    commits.push({ hash, short, subject, when, ...sumFiles(files), files: files.length });
   }
   const shownCommits = vsMaster
     ? commits
@@ -1031,9 +1025,7 @@ window.addEventListener('message', (ev) => {
   }
 });
 
-function sumFiles(files) {
-  return files.reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
-}
+${sumFiles.toString()}
 
 vscode.postMessage({ type: 'ready' });
 </script>

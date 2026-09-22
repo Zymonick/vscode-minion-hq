@@ -29,6 +29,12 @@ Then reload the window and open **Minion HQ** from the Activity Bar.
 
 Minion HQ updates the existing SCM Diff Stats installation. The extension ID `simon.scm-diff-stats` and `scmDiffStats.*` settings remain compatible with existing installations.
 
+## Deploy
+
+Run `minion-hq-deploy` from any folder, optionally followed by a quoted commit message. It runs CI, commits all pending changes in its Minion HQ checkout, pushes that checkout's current branch to `origin`, and builds and installs the extension locally. A failed check or push stops deployment; installation failure leaves the pushed commit available for retry. Reload the VS Code window after installation. The command uses Node.js 24 from PATH or nvm; `NODE_BIN` overrides detection.
+
+Install the command once from the desired checkout with `mkdir -p "$HOME/.local/bin"` and `ln -s "$PWD/deploy.sh" "$HOME/.local/bin/minion-hq-deploy"`. Keep that checkout on disk and include `$HOME/.local/bin` in PATH. The script follows the symlink to its checkout and pushes the current branch without merging it into another branch. Running `./deploy.sh` directly has the same behavior.
+
 ## Develop
 
 Everything lives in `extension/extension.js` (plain JS, no build step, no dependencies).

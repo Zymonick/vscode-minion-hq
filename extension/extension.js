@@ -720,6 +720,7 @@ function getHtml(nonce) {
 <div id="root"></div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
+window.addEventListener('error', (e) => vscode.postMessage({ type: 'error', message: e.message }));
 let repos = [];
 let agents = {};
 let syncEnabled = false;
@@ -1391,7 +1392,10 @@ class StatsViewProvider {
         await Promise.all(Array.from({ length: Math.min(REPO_CONCURRENCY, repos.length) }, async () => {
           while (next < repos.length) {
             const i = next++;
-            results[i] = await collectRepo(repos[i], testing).catch(() => null);
+            results[i] = await collectRepo(repos[i], testing).catch((e) => {
+              log('collect: ' + repos[i] + ': ' + (e.stack || e.message));
+              return null;
+            });
           }
         }));
 
@@ -1434,7 +1438,9 @@ class StatsViewProvider {
   }
 
   async onMessage(m) {
-    if (m.type === 'ready') {
+    if (m.type === 'error') {
+      log('webview: ' + m.message);
+    } else if (m.type === 'ready') {
       this.push();
     } else if (m.type === 'expandCommit') {
       const [numOut, nsOut] = await Promise.all([

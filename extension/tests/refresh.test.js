@@ -7,12 +7,13 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function load({ collect, fileSystem = fs, childProcess = {} } = {}) {
+function load({ collect, complexity = async () => null, fileSystem = fs, childProcess = {} } = {}) {
   const context = {
-    module: { exports: {} }, process, Buffer, setImmediate,
+    module: { exports: {} }, process, Buffer, setImmediate, complexity,
     collect: collect || (async (repoPath) => ({ repoPath, staged: [], unstaged: [], untracked: [] })),
     require: (name) => {
       if (name === 'vscode') return {
+        Uri: { file: (file) => file },
         workspace: { getConfiguration: () => ({ get: () => '' }) },
         window: { createOutputChannel: () => ({ appendLine() {} }) },
       };
@@ -24,11 +25,185 @@ function load({ collect, fileSystem = fs, childProcess = {} } = {}) {
   return vm.runInNewContext(source + `
     const collectOriginal = collectRepo;
     collectRepo = collect;
+    collectComplexity = complexity;
     scanAgents = () => ({});
     scanTestingSerials = () => new Set();
     ({ StatsViewProvider, git, countLines, collectOriginal });
   `, context);
 }
+
+test('startup publishes the first completed row while other repositories are still loading', async () => {
+  const work = deferredRepos();
+  const { StatsViewProvider } = load(work);
+  const provider = new StatsViewProvider();
+  provider.repos = ['/repos/fast', '/repos/slow', '/repos/queued'];
+  const published = [];
+  provider.push = () => published.push([...provider.data.keys()]);
+  const done = provider.refresh();
+  await tick();
+  work.pending.shift()();
+  await tick();
+  assert.deepEqual(published, [['/repos/fast']]);
+  while (work.pending.length) {
+    work.pending.shift()();
+    await tick();
+  }
+  await done;
+  assert.deepEqual([...provider.data.keys()], provider.repos);
+});
+
+test('complexity waits until all basic rows are published and stays bounded', async () => {
+  const work = deferredRepos();
+  const collected = [];
+  const { StatsViewProvider } = load({
+    collect: async (repoPath) => {
+      collected.push(repoPath);
+      return { repoPath, staged: [], unstaged: [], untracked: [],
+        vsMaster: { mergeBase: 'base', headSha: 'snapshot', files: [], renames: {}, cx: null,
+          vendorRoots: { headRoots: [{ path: 'vendor/library' }], baseRoots: [] } } };
+    },
+    complexity: async (repoPath, mergeBase, files, renames, headSha, vendorRoots) => {
+      assert.equal(provider.data.size, 3, 'every row must be usable before scoring starts');
+      assert.equal(headSha, 'snapshot', 'score the revision whose diff is on screen');
+      assert.equal(vendorRoots.headRoots[0].path, 'vendor/library', 'deferred scoring must retain vendor exclusions');
+      await work.collect(repoPath);
+      return { cognitive: 7 };
+    },
+  });
+  const provider = new StatsViewProvider();
+  provider.repos = ['/repos/a', '/repos/b', '/repos/c'];
+  const done = provider.refresh();
+  await tick();
+  assert.deepEqual(collected, provider.repos);
+  assert.equal(work.calls.length, 2);
+  assert.equal(provider.data.get('/repos/a').vsMaster.cx, null);
+  while (work.pending.length) {
+    work.pending.shift()();
+    await tick();
+  }
+  await done;
+  assert.equal(work.peak(), 2);
+  assert.equal(provider.data.get('/repos/a').vsMaster.cx.cognitive, 7);
+});
+
+test('repository collection returns its diff without running complexity', async () => {
+  let scored = false;
+  const { collectOriginal } = load({
+    complexity: async () => { scored = true; },
+    childProcess: { execFile(command, args, options, callback) {
+      const output = args[0] === 'rev-parse'
+        ? args.includes('--abbrev-ref') ? 'feature\n' : 'master-sha\nhead-sha\n'
+        : args[0] === 'merge-base' ? 'base-sha\n'
+        : args[0] === 'diff' && args.includes('master-sha...head-sha')
+          ? args.includes('--numstat') ? '2\t1\tcode.py\n' : 'M\tcode.py\n'
+          : '';
+      setImmediate(() => callback(null, output));
+    } },
+  });
+  const result = await collectOriginal('/repos/example', new Set());
+  assert.equal(scored, false);
+  assert.equal(result.vsMaster.headSha, 'head-sha');
+  assert.equal(result.vsMaster.files[0].add, 2);
+  assert.equal(result.vsMaster.cx, null);
+});
+
+test('refresh keeps known complexity visible only for an unchanged revision', async () => {
+  let revision = 'old';
+  const { StatsViewProvider } = load({
+    collect: async (repoPath) => ({ repoPath, staged: [], unstaged: [], untracked: [],
+      vsMaster: { headSha: revision, mergeBase: 'base', files: [{ path: 'code.py' }], renames: {}, cx: null } }),
+    complexity: async (repoPath, base, files) => {
+      files[0].cx = { cognitive: 7 };
+      return { cognitive: 7 };
+    },
+  });
+  const provider = new StatsViewProvider();
+  provider.repos = ['/repos/a'];
+  await provider.refresh();
+  const published = [];
+  provider.push = () => {
+    const v = provider.data.get('/repos/a').vsMaster;
+    published.push({ total: v.cx?.cognitive, file: v.files[0].cx?.cognitive });
+  };
+  await provider.refresh();
+  assert.deepEqual(published[0], { total: 7, file: 7 });
+  revision = 'new';
+  published.length = 0;
+  await provider.refresh();
+  assert.deepEqual(published[0], { total: undefined, file: undefined });
+});
+
+test('startup distinguishes loading from an empty workspace and completes after failed scans', async () => {
+  const { StatsViewProvider } = load({ collect: async () => { throw new Error('unavailable'); } });
+  const provider = new StatsViewProvider();
+  const messages = [];
+  provider.view = { webview: { postMessage: (message) => messages.push(message) } };
+  await provider.onMessage({ type: 'ready' });
+  assert.equal(messages.at(-1).loading, true);
+  provider.setRepos([]);
+  await provider.refreshPromise;
+  assert.equal(messages.at(-1).loading, false);
+  provider.setRepos(['/repos/missing']);
+  await provider.refreshPromise;
+  assert.equal(messages.at(-1).loading, false);
+  assert.equal(messages.at(-1).repos.length, 0);
+});
+
+test('repository removal while scoring does not publish obsolete complexity or score queued rows', async () => {
+  const work = deferredRepos();
+  const { StatsViewProvider } = load({
+    collect: async (repoPath) => ({ repoPath, staged: [], unstaged: [], untracked: [],
+      vsMaster: { mergeBase: 'base', files: [], renames: {}, cx: null } }),
+    complexity: work.collect,
+  });
+  const provider = new StatsViewProvider();
+  provider.repos = ['/repos/a', '/repos/b', '/repos/obsolete'];
+  const published = [];
+  provider.push = () => published.push([...provider.data.keys()]);
+  const done = provider.refresh();
+  await tick();
+  published.length = 0;
+  provider.setRepos(['/repos/current']);
+  while (work.pending.length) {
+    work.pending.shift()();
+    await tick();
+  }
+  await done;
+  assert.ok(!work.calls.includes('/repos/obsolete'));
+  assert.ok(published.length > 0);
+  assert.ok(published.every((keys) => keys.length === 1 && keys[0] === '/repos/current'));
+});
+
+test('rediscovering identical worktrees does not queue a redundant startup scan', async () => {
+  const work = deferredRepos();
+  const { StatsViewProvider } = load(work);
+  const provider = new StatsViewProvider();
+  provider.setRepos(['/repos/a']);
+  const done = provider.refreshPromise;
+  await tick();
+  provider.setRepos(['/repos/a']);
+  work.pending.shift()();
+  await tick();
+  assert.equal(work.calls.length, 1);
+  await done;
+});
+
+test('removed repositories stop consuming queued collection work', async () => {
+  const work = deferredRepos();
+  const { StatsViewProvider } = load(work);
+  const provider = new StatsViewProvider();
+  provider.repos = ['/repos/a', '/repos/b', '/repos/obsolete'];
+  const done = provider.refresh();
+  await tick();
+  provider.setRepos(['/repos/current']);
+  while (work.pending.length) {
+    work.pending.shift()();
+    await tick();
+  }
+  await done;
+  assert.ok(!work.calls.includes('/repos/obsolete'));
+  assert.deepEqual([...provider.data.keys()], ['/repos/current']);
+});
 
 function deferredRepos() {
   const pending = [];

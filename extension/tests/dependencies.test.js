@@ -144,12 +144,12 @@ test('complexity scoring skips vendor sides and still scores the application ada
     };
     qltyCacheLoad = () => ({ has: () => true, get: () => ({ complex: 3, cyclo: 4 }) });
   `, context);
-  const vendor = { path: 'staticfiles/pdfjs-5.6.205/build/pdf.js' };
+  const vendor = { path: 'staticfiles/pdfjs-5.6.205/build/pdf.js', cx: { cognitive: 999 } };
   const adapter = { path: 'invoice/static/invoice/pdf_viewer.js' };
   const regression = { path: 'invoice/test_annotations.py' };
-  const total = await collectComplexity('/repo', 'base', [vendor, adapter, regression], {}, {
+  const total = await collectComplexity('/repo', 'base', [vendor, adapter, regression], {}, 'head', {
     baseRoots: [{ path: 'staticfiles/pdfjs-5.6.205' }], headRoots: [{ path: 'staticfiles/pdfjs-5.6.205' }],
-  }, 'head');
+  });
   assert.equal(vendor.cx, undefined);
   assert.equal(adapter.cx.head, 3);
   assert.equal(total.files, 1);
@@ -157,9 +157,9 @@ test('complexity scoring skips vendor sides and still scores the application ada
   assert.ok(context.scoredPaths.every(([, paths]) => paths.length === 2 && !paths.includes(vendor.path)));
 
   const moved = { path: 'vendor/lib/adapter.js' };
-  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'app/adapter.js' }, {
+  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'app/adapter.js' }, 'head', {
     baseRoots: [], headRoots: [{ path: 'vendor/lib' }],
-  }, 'head');
+  });
   assert.equal(movedTotal.cognitive, -3, 'only the formerly owned application side should count');
 });
 

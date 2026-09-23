@@ -59,4 +59,5 @@ if [ -n "$CODE" ]; then
   echo "installed Minion HQ $VERSION — reload the VS Code window to pick it up"
 else
   echo "code CLI not found; install manually: code --install-extension $VSIX"
+  exit 1
 fi

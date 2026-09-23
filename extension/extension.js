@@ -77,15 +77,10 @@ function parseRenames(out) {
   return map;
 }
 
-function parseShortstatLine(line) {
-  const add = (line.match(/(\d+) insertion/) || [])[1];
-  const del = (line.match(/(\d+) deletion/) || [])[1];
-  const filesChanged = (line.match(/(\d+) files? changed/) || [])[1];
-  return { add: add ? +add : 0, del: del ? +del : 0, files: filesChanged ? +filesChanged : 0 };
-}
-
 function sumFiles(files) {
-  return files.reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
+  // Git quotes paths containing non-ASCII or special characters.
+  return files.filter((f) => !f.path.startsWith('docs/') && !f.path.startsWith('"docs/'))
+    .reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
 }
 
 async function countLines(file) {
@@ -105,13 +100,12 @@ async function countLines(file) {
 }
 
 async function collectRepo(repoPath, testing) {
-  const [unstagedOut, stagedOut, untrackedOut, branchOut, statusOut, headOut] = await Promise.all([
+  const [unstagedOut, stagedOut, untrackedOut, branchOut, statusOut] = await Promise.all([
     git(repoPath, ['diff', '--numstat']),
     git(repoPath, ['diff', '--numstat', '--cached']),
     git(repoPath, ['ls-files', '--others', '--exclude-standard']),
     git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']),
     git(repoPath, ['status', '--porcelain']),
-    git(repoPath, ['rev-parse', '--verify', 'HEAD']),
   ]);
 
   // status letters: index (staged) and worktree columns
@@ -138,21 +132,22 @@ async function collectRepo(repoPath, testing) {
 
   let vsMaster = null;
   let masterSha = '';
-  const headRef = headOut.trim();
-  if (branch && branch !== 'master' && headRef) {
-    masterSha = (await git(repoPath, ['rev-parse', '--verify', '--quiet', 'master'])).trim();
-    if (masterSha) {
+  if (branch && branch !== 'master') {
+    const refs = (await git(repoPath, ['rev-parse', '--quiet', 'master', 'HEAD'])).trim().split('\n');
+    masterSha = refs[0];
+    const headSha = refs[1];
+    if (masterSha && headSha) {
       const [behindOut, aheadOut, mbOut, numstatOut, nameStatusOut] = await Promise.all([
-        git(repoPath, ['rev-list', '--count', headRef + '..' + masterSha]),
-        git(repoPath, ['rev-list', '--count', masterSha + '..' + headRef]),
-        git(repoPath, ['merge-base', headRef, masterSha]),
-        git(repoPath, ['diff', '--numstat', '--find-renames', masterSha + '...' + headRef]),
-        git(repoPath, ['diff', '--name-status', '--find-renames', masterSha + '...' + headRef]),
+        git(repoPath, ['rev-list', '--count', `${headSha}..${masterSha}`]),
+        git(repoPath, ['rev-list', '--count', `${masterSha}..${headSha}`]),
+        git(repoPath, ['merge-base', headSha, masterSha]),
+        git(repoPath, ['diff', '--numstat', '--find-renames', `${masterSha}...${headSha}`]),
+        git(repoPath, ['diff', '--name-status', '--find-renames', `${masterSha}...${headSha}`]),
       ]);
       const files = withLetter(parseNumstat(numstatOut), parseNameStatus(nameStatusOut), 'M');
       const mergeBase = mbOut.trim();
       const renames = parseRenames(nameStatusOut);
-      const dependencies = await collectDependencies(repoPath, mergeBase, headRef, files, renames).catch((e) => {
+      const dependencies = await collectDependencies(repoPath, mergeBase, headSha, files, renames).catch((e) => {
         log('dependencies: ' + path.basename(repoPath) + ': ' + e.message);
         return null;
       });
@@ -160,13 +155,13 @@ async function collectRepo(repoPath, testing) {
         behind: +behindOut.trim() || 0,
         ahead: +aheadOut.trim() || 0,
         mergeBase,
+        headSha,
         files,
         totals: sumFiles(files),
         dependencies: dependencies ? dependencies.changes : null,
-        cx: await collectComplexity(repoPath, mergeBase, files, renames, dependencies, headRef).catch((e) => {
-          log('complexity: ' + path.basename(repoPath) + ': ' + e.message);
-          return null;
-        }),
+        vendorRoots: dependencies,
+        renames,
+        cx: null,
       };
     }
   }
@@ -176,17 +171,16 @@ async function collectRepo(repoPath, testing) {
 
   // branch repos: only commits not already on master; master itself: recent history
   const logOut = vsMaster
-    ? await git(repoPath, ['log', '-n', '50', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--shortstat', 'master..HEAD'])
-    : await git(repoPath, ['log', '-n', '30', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--shortstat']);
+    ? await git(repoPath, ['log', '-n', '50', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--numstat', 'master..HEAD'])
+    : await git(repoPath, ['log', '-n', '30', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--numstat']);
 
   const commits = [];
   for (const entry of logOut.split('\x01')) {
     if (!entry.trim()) continue;
     const lines = entry.split('\n');
     const [hash, short, subject, when] = lines[0].split('\x02');
-    const statLine = (lines.slice(1).join('\n').match(/\d+ files? changed[^\n]*/) || [''])[0];
-    const s = statLine ? parseShortstatLine(statLine) : { add: 0, del: 0, files: 0 };
-    commits.push({ hash, short, subject, when, ...s });
+    const files = parseNumstat(lines.slice(1).join('\n'));
+    commits.push({ hash, short, subject, when, ...sumFiles(files), files: files.length });
   }
   const shownCommits = vsMaster
     ? commits
@@ -796,13 +790,14 @@ function complexityTotals(scored, renames = {}) {
 // two sides the +/- numbers compare), adds `cx` to each scored file and returns
 // the totals — null when qlty is unavailable or the run failed, so the column
 // simply stays away.
-async function collectComplexity(repoPath, mergeBase, files, renames, dependencies, headRef = 'HEAD') {
+async function collectComplexity(repoPath, mergeBase, files, renames, headSha, dependencies) {
   const cmd = qltyCommandPath();
   if (!cmd || cmd === qltyMissing || !mergeBase) return null;
   const root = await qltyRoot();
   if (!root) return null;
   const wanted = [];
   for (const f of files) {
+    delete f.cx;
     if (f.binary) continue;
     const ext = qltyExt(f.path);
     if (!ext) continue;
@@ -817,7 +812,7 @@ async function collectComplexity(repoPath, mergeBase, files, renames, dependenci
   if (!wanted.length) return complexityTotals([]);
   const paths = (side) => [...new Set(wanted.filter((w) => w.side === side).map((w) => w.path))];
   const [headIds, baseIds] = await Promise.all([
-    treeBlobs(repoPath, headRef, paths('head')),
+    treeBlobs(repoPath, headSha, paths('head')),
     treeBlobs(repoPath, mergeBase, paths('base')),
   ]);
   for (const w of wanted) {
@@ -935,10 +930,12 @@ function getHtml(nonce) {
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root"><div class="empty">Loading repositories…</div></div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
+window.addEventListener('error', (e) => vscode.postMessage({ type: 'error', message: e.message }));
 let repos = [];
+let loading = true;
 let agents = {};
 let syncEnabled = false;
 let previewEnabled = false;
@@ -1087,8 +1084,11 @@ function fileRow(depth, repoPath, f, act, lead) {
 
 function render() {
   const root = document.getElementById('root');
-  if (!repos.length) { root.innerHTML = '<div class="empty">No git repositories found.</div>'; return; }
-  let h = '';
+  if (!repos.length) {
+    root.innerHTML = '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>';
+    return;
+  }
+  let h = loading ? '<div class="empty">Loading remaining repositories…</div>' : '';
   for (const r of repos) {
     const rid = 'r|' + r.repoPath;
     const rc = isCollapsed(rid, false);
@@ -1264,6 +1264,7 @@ document.addEventListener('click', (ev) => {
 window.addEventListener('message', (ev) => {
   const m = ev.data;
   if (m.type === 'data') {
+    loading = !!m.loading;
     syncEnabled = !!m.syncEnabled;
     previewEnabled = !!m.previewEnabled;
     ciEnabled = !!m.ciEnabled;
@@ -1284,9 +1285,7 @@ window.addEventListener('message', (ev) => {
   }
 });
 
-function sumFiles(files) {
-  return files.reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
-}
+${sumFiles.toString()}
 
 vscode.postMessage({ type: 'ready' });
 </script>
@@ -1405,12 +1404,14 @@ class StatsViewProvider {
   constructor() {
     this.view = null;
     this.repos = [];
+    this.reposKnown = false;
     this.data = new Map();
     this.fileStats = new Map();
     this.running = new Set();
     this.agents = {};
     this.refreshPromise = null;
     this.refreshPending = false;
+    this.loading = true;
     this.channel = vscode.window.createOutputChannel('Minion HQ');
     logChannel = this.channel;
   }
@@ -1631,7 +1632,12 @@ class StatsViewProvider {
   }
 
   setRepos(paths) {
-    this.repos = paths;
+    if (this.reposKnown && paths.length === this.repos.length && paths.every((p, i) => p === this.repos[i])) {
+      return;
+    }
+    this.reposKnown = true;
+    this.repos = [...paths];
+    this.loading = true;
     this.refresh();
   }
 
@@ -1643,31 +1649,71 @@ class StatsViewProvider {
       // Changes during collection request one follow-up, never another parallel scan.
       while (this.refreshPending) {
         this.refreshPending = false;
-        const repos = [...this.repos];
+        const repos = this.repos;
+        const current = () => repos === this.repos;
         this.agents = scanAgents(repos);
         const testing = scanTestingSerials(
           repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
         const results = new Array(repos.length);
-        let next = 0;
-        await Promise.all(Array.from({ length: Math.min(REPO_CONCURRENCY, repos.length) }, async () => {
-          while (next < repos.length) {
-            const i = next++;
-            results[i] = await collectRepo(repos[i], testing).catch(() => null);
+        let completed = 0;
+        const publish = () => {
+          if (!current()) {
+            return;
           }
-        }));
-
-        if (repos.length !== this.repos.length || repos.some((r, i) => r !== this.repos[i])) continue;
-
-        this.data.clear();
-        this.fileStats.clear();
-        for (const d of results) {
-          if (!d) continue;
-          this.data.set(d.repoPath, d);
-          for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
-            this.fileStats.set(path.join(d.repoPath, f.path), f);
+          // Keep previous rows usable while refreshing; a failed scan removes its stale row.
+          this.data = new Map(repos.map((r, i) =>
+            [r, results[i] === undefined ? this.data.get(r) : results[i]]).filter(([, d]) => d));
+          this.loading = completed < repos.length;
+          this.fileStats.clear();
+          for (const d of this.data.values()) {
+            for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
+              this.fileStats.set(path.join(d.repoPath, f.path), f);
+            }
           }
+          this.push();
+        };
+        const collect = async (visit) => {
+          let next = 0;
+          await Promise.all(Array.from({ length: Math.min(REPO_CONCURRENCY, repos.length) }, async () => {
+            while (current() && next < repos.length) {
+              await visit(next++);
+            }
+          }));
+        };
+        await collect(async (i) => {
+          results[i] = await collectRepo(repos[i], testing).catch((e) => {
+            log('collect: ' + repos[i] + ': ' + (e.stack || e.message));
+            return null;
+          });
+          const v = results[i] && results[i].vsMaster;
+          const previous = this.data.get(repos[i])?.vsMaster;
+          if (v && previous && v.headSha && v.headSha === previous.headSha && v.mergeBase === previous.mergeBase) {
+            v.cx = previous.cx;
+            const scores = new Map(previous.files.map((f) => [f.path, f.cx]));
+            for (const f of v.files) {
+              f.cx = scores.get(f.path);
+            }
+          }
+          completed++;
+          publish();
+        });
+        if (!repos.length) {
+          publish();
         }
-        this.push();
+
+        // Complexity can take much longer than Git status. Publish every basic row first.
+        await collect(async (i) => {
+          const d = results[i];
+          if (!d || !d.vsMaster) {
+            return;
+          }
+          const v = d.vsMaster;
+          v.cx = await collectComplexity(d.repoPath, v.mergeBase, v.files, v.renames, v.headSha, v.vendorRoots).catch((e) => {
+            log('complexity: ' + path.basename(d.repoPath) + ': ' + e.message);
+            return null;
+          });
+          publish();
+        });
       }
     }).catch((e) => log('refresh: ' + e.message)).finally(() => {
       this.refreshPromise = null;
@@ -1680,7 +1726,7 @@ class StatsViewProvider {
     if (!this.view) return;
     const repos = this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r));
     this.view.webview.postMessage({
-      type: 'data', repos, syncEnabled: !!this.syncCommand(),
+      type: 'data', repos, loading: this.loading, syncEnabled: !!this.syncCommand(),
       previewEnabled: !!this.previewCommand(), ciEnabled: !!ciCommandPath(),
       agents: this.agents,
     });
@@ -1695,7 +1741,9 @@ class StatsViewProvider {
   }
 
   async onMessage(m) {
-    if (m.type === 'ready') {
+    if (m.type === 'error') {
+      log('webview: ' + m.message);
+    } else if (m.type === 'ready') {
       this.push();
     } else if (m.type === 'expandCommit') {
       const [numOut, nsOut] = await Promise.all([

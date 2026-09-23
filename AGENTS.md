@@ -1,0 +1,1 @@
+For Minion HQ work, run `./ci.sh`, review and commit the task's changes, and push the task branch to `origin` (`git@github.com:Zymonick/vscode-minion-hq.git`) before handing off completed work. The user has given standing authorization for these pushes; do not ask for separate push confirmation.

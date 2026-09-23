@@ -133,14 +133,16 @@ async function collectRepo(repoPath, testing) {
   let vsMaster = null;
   let masterSha = '';
   if (branch && branch !== 'master') {
-    masterSha = (await git(repoPath, ['rev-parse', '--verify', '--quiet', 'master'])).trim();
+    const refs = (await git(repoPath, ['rev-parse', '--quiet', 'master', 'HEAD'])).trim().split('\n');
+    masterSha = refs[0];
+    const headSha = refs[1];
     if (masterSha) {
       const [behindOut, aheadOut, mbOut, numstatOut, nameStatusOut] = await Promise.all([
-        git(repoPath, ['rev-list', '--count', 'HEAD..master']),
-        git(repoPath, ['rev-list', '--count', 'master..HEAD']),
-        git(repoPath, ['merge-base', 'HEAD', 'master']),
-        git(repoPath, ['diff', '--numstat', '--find-renames', 'master...HEAD']),
-        git(repoPath, ['diff', '--name-status', '--find-renames', 'master...HEAD']),
+        git(repoPath, ['rev-list', '--count', `${headSha}..${masterSha}`]),
+        git(repoPath, ['rev-list', '--count', `${masterSha}..${headSha}`]),
+        git(repoPath, ['merge-base', headSha, masterSha]),
+        git(repoPath, ['diff', '--numstat', '--find-renames', `${masterSha}...${headSha}`]),
+        git(repoPath, ['diff', '--name-status', '--find-renames', `${masterSha}...${headSha}`]),
       ]);
       const files = withLetter(parseNumstat(numstatOut), parseNameStatus(nameStatusOut), 'M');
       const mergeBase = mbOut.trim();
@@ -148,12 +150,11 @@ async function collectRepo(repoPath, testing) {
         behind: +behindOut.trim() || 0,
         ahead: +aheadOut.trim() || 0,
         mergeBase,
+        headSha,
         files,
         totals: sumFiles(files),
-        cx: await collectComplexity(repoPath, mergeBase, files, parseRenames(nameStatusOut)).catch((e) => {
-          log('complexity: ' + path.basename(repoPath) + ': ' + e.message);
-          return null;
-        }),
+        renames: parseRenames(nameStatusOut),
+        cx: null,
       };
     }
   }
@@ -583,7 +584,7 @@ function complexityTotals(scored) {
 // two sides the +/- numbers compare), adds `cx` to each scored file and returns
 // the totals — null when qlty is unavailable or the run failed, so the column
 // simply stays away.
-async function collectComplexity(repoPath, mergeBase, files, renames) {
+async function collectComplexity(repoPath, mergeBase, files, renames, headSha) {
   const cmd = qltyCommandPath();
   if (!cmd || cmd === qltyMissing || !mergeBase) return null;
   const root = await qltyRoot();
@@ -600,7 +601,7 @@ async function collectComplexity(repoPath, mergeBase, files, renames) {
   if (!wanted.length) return complexityTotals([]);
   const paths = (side) => [...new Set(wanted.filter((w) => w.side === side).map((w) => w.path))];
   const [headIds, baseIds] = await Promise.all([
-    treeBlobs(repoPath, 'HEAD', paths('head')),
+    treeBlobs(repoPath, headSha, paths('head')),
     treeBlobs(repoPath, mergeBase, paths('base')),
   ]);
   for (const w of wanted) {
@@ -717,11 +718,12 @@ function getHtml(nonce) {
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root"><div class="empty">Loading repositories…</div></div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 window.addEventListener('error', (e) => vscode.postMessage({ type: 'error', message: e.message }));
 let repos = [];
+let loading = true;
 let agents = {};
 let syncEnabled = false;
 let previewEnabled = false;
@@ -829,8 +831,11 @@ function fileRow(depth, repoPath, f, act, lead) {
 
 function render() {
   const root = document.getElementById('root');
-  if (!repos.length) { root.innerHTML = '<div class="empty">No git repositories found.</div>'; return; }
-  let h = '';
+  if (!repos.length) {
+    root.innerHTML = '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>';
+    return;
+  }
+  let h = loading ? '<div class="empty">Loading remaining repositories…</div>' : '';
   for (const r of repos) {
     const rid = 'r|' + r.repoPath;
     const rc = isCollapsed(rid, false);
@@ -1006,6 +1011,7 @@ document.addEventListener('click', (ev) => {
 window.addEventListener('message', (ev) => {
   const m = ev.data;
   if (m.type === 'data') {
+    loading = !!m.loading;
     syncEnabled = !!m.syncEnabled;
     previewEnabled = !!m.previewEnabled;
     ciEnabled = !!m.ciEnabled;
@@ -1145,12 +1151,14 @@ class StatsViewProvider {
   constructor() {
     this.view = null;
     this.repos = [];
+    this.reposKnown = false;
     this.data = new Map();
     this.fileStats = new Map();
     this.running = new Set();
     this.agents = {};
     this.refreshPromise = null;
     this.refreshPending = false;
+    this.loading = true;
     this.channel = vscode.window.createOutputChannel('Minion HQ');
     logChannel = this.channel;
   }
@@ -1371,7 +1379,12 @@ class StatsViewProvider {
   }
 
   setRepos(paths) {
-    this.repos = paths;
+    if (this.reposKnown && paths.length === this.repos.length && paths.every((p, i) => p === this.repos[i])) {
+      return;
+    }
+    this.reposKnown = true;
+    this.repos = [...paths];
+    this.loading = true;
     this.refresh();
   }
 
@@ -1383,34 +1396,71 @@ class StatsViewProvider {
       // Changes during collection request one follow-up, never another parallel scan.
       while (this.refreshPending) {
         this.refreshPending = false;
-        const repos = [...this.repos];
+        const repos = this.repos;
+        const current = () => repos === this.repos;
         this.agents = scanAgents(repos);
         const testing = scanTestingSerials(
           repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
         const results = new Array(repos.length);
-        let next = 0;
-        await Promise.all(Array.from({ length: Math.min(REPO_CONCURRENCY, repos.length) }, async () => {
-          while (next < repos.length) {
-            const i = next++;
-            results[i] = await collectRepo(repos[i], testing).catch((e) => {
-              log('collect: ' + repos[i] + ': ' + (e.stack || e.message));
-              return null;
-            });
+        let completed = 0;
+        const publish = () => {
+          if (!current()) {
+            return;
           }
-        }));
-
-        if (repos.length !== this.repos.length || repos.some((r, i) => r !== this.repos[i])) continue;
-
-        this.data.clear();
-        this.fileStats.clear();
-        for (const d of results) {
-          if (!d) continue;
-          this.data.set(d.repoPath, d);
-          for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
-            this.fileStats.set(path.join(d.repoPath, f.path), f);
+          // Keep previous rows usable while refreshing; a failed scan removes its stale row.
+          this.data = new Map(repos.map((r, i) =>
+            [r, results[i] === undefined ? this.data.get(r) : results[i]]).filter(([, d]) => d));
+          this.loading = completed < repos.length;
+          this.fileStats.clear();
+          for (const d of this.data.values()) {
+            for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
+              this.fileStats.set(path.join(d.repoPath, f.path), f);
+            }
           }
+          this.push();
+        };
+        const collect = async (visit) => {
+          let next = 0;
+          await Promise.all(Array.from({ length: Math.min(REPO_CONCURRENCY, repos.length) }, async () => {
+            while (current() && next < repos.length) {
+              await visit(next++);
+            }
+          }));
+        };
+        await collect(async (i) => {
+          results[i] = await collectRepo(repos[i], testing).catch((e) => {
+            log('collect: ' + repos[i] + ': ' + (e.stack || e.message));
+            return null;
+          });
+          const v = results[i] && results[i].vsMaster;
+          const previous = this.data.get(repos[i])?.vsMaster;
+          if (v && previous && v.headSha && v.headSha === previous.headSha && v.mergeBase === previous.mergeBase) {
+            v.cx = previous.cx;
+            const scores = new Map(previous.files.map((f) => [f.path, f.cx]));
+            for (const f of v.files) {
+              f.cx = scores.get(f.path);
+            }
+          }
+          completed++;
+          publish();
+        });
+        if (!repos.length) {
+          publish();
         }
-        this.push();
+
+        // Complexity can take much longer than Git status. Publish every basic row first.
+        await collect(async (i) => {
+          const d = results[i];
+          if (!d || !d.vsMaster) {
+            return;
+          }
+          const v = d.vsMaster;
+          v.cx = await collectComplexity(d.repoPath, v.mergeBase, v.files, v.renames, v.headSha).catch((e) => {
+            log('complexity: ' + path.basename(d.repoPath) + ': ' + e.message);
+            return null;
+          });
+          publish();
+        });
       }
     }).catch((e) => log('refresh: ' + e.message)).finally(() => {
       this.refreshPromise = null;
@@ -1423,7 +1473,7 @@ class StatsViewProvider {
     if (!this.view) return;
     const repos = this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r));
     this.view.webview.postMessage({
-      type: 'data', repos, syncEnabled: !!this.syncCommand(),
+      type: 'data', repos, loading: this.loading, syncEnabled: !!this.syncCommand(),
       previewEnabled: !!this.previewCommand(), ciEnabled: !!ciCommandPath(),
       agents: this.agents,
     });

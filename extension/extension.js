@@ -105,12 +105,13 @@ async function countLines(file) {
 }
 
 async function collectRepo(repoPath, testing) {
-  const [unstagedOut, stagedOut, untrackedOut, branchOut, statusOut] = await Promise.all([
+  const [unstagedOut, stagedOut, untrackedOut, branchOut, statusOut, headOut] = await Promise.all([
     git(repoPath, ['diff', '--numstat']),
     git(repoPath, ['diff', '--numstat', '--cached']),
     git(repoPath, ['ls-files', '--others', '--exclude-standard']),
     git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']),
     git(repoPath, ['status', '--porcelain']),
+    git(repoPath, ['rev-parse', '--verify', 'HEAD']),
   ]);
 
   // status letters: index (staged) and worktree columns
@@ -137,25 +138,32 @@ async function collectRepo(repoPath, testing) {
 
   let vsMaster = null;
   let masterSha = '';
-  if (branch && branch !== 'master') {
+  const headRef = headOut.trim();
+  if (branch && branch !== 'master' && headRef) {
     masterSha = (await git(repoPath, ['rev-parse', '--verify', '--quiet', 'master'])).trim();
     if (masterSha) {
       const [behindOut, aheadOut, mbOut, numstatOut, nameStatusOut] = await Promise.all([
-        git(repoPath, ['rev-list', '--count', 'HEAD..master']),
-        git(repoPath, ['rev-list', '--count', 'master..HEAD']),
-        git(repoPath, ['merge-base', 'HEAD', 'master']),
-        git(repoPath, ['diff', '--numstat', '--find-renames', 'master...HEAD']),
-        git(repoPath, ['diff', '--name-status', '--find-renames', 'master...HEAD']),
+        git(repoPath, ['rev-list', '--count', headRef + '..' + masterSha]),
+        git(repoPath, ['rev-list', '--count', masterSha + '..' + headRef]),
+        git(repoPath, ['merge-base', headRef, masterSha]),
+        git(repoPath, ['diff', '--numstat', '--find-renames', masterSha + '...' + headRef]),
+        git(repoPath, ['diff', '--name-status', '--find-renames', masterSha + '...' + headRef]),
       ]);
       const files = withLetter(parseNumstat(numstatOut), parseNameStatus(nameStatusOut), 'M');
       const mergeBase = mbOut.trim();
+      const renames = parseRenames(nameStatusOut);
+      const dependencies = await collectDependencies(repoPath, mergeBase, headRef, files, renames).catch((e) => {
+        log('dependencies: ' + path.basename(repoPath) + ': ' + e.message);
+        return null;
+      });
       vsMaster = {
         behind: +behindOut.trim() || 0,
         ahead: +aheadOut.trim() || 0,
         mergeBase,
         files,
         totals: sumFiles(files),
-        cx: await collectComplexity(repoPath, mergeBase, files, parseRenames(nameStatusOut)).catch((e) => {
+        dependencies: dependencies ? dependencies.changes : null,
+        cx: await collectComplexity(repoPath, mergeBase, files, renames, dependencies, headRef).catch((e) => {
           log('complexity: ' + path.basename(repoPath) + ': ' + e.message);
           return null;
         }),
@@ -421,8 +429,181 @@ async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
   return { serial, state, reason, suite: tested && tested.suite, time: tested && tested.time };
 }
 
+// ── Vendored dependencies vs master ─────────────────────────────────────────
+const VENDOR_CACHE_MAX = 64;
+const VENDOR_METADATA_MAX = 128 * 1024;
+const vendorCache = new Map();
+
+function vendorLocation(filePath) {
+  const match = /^(.*?(?:^|\/)(?:vendor|third_party|third-party|staticfiles))\/((?:@[^/]+\/)?[^/]+)\//.exec(filePath);
+  return match ? { container: match[1], root: match[1] + '/' + match[2] } : null;
+}
+
+function vendorDeclarations(repoPath) {
+  const settings = vscode.workspace.getConfiguration('scmDiffStats', vscode.Uri.file(repoPath));
+  const entries = settings.get('vendorLibraries') || [];
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries.filter((entry) => entry && typeof entry.name === 'string' && entry.name.trim()
+    && typeof entry.path === 'string' && entry.path
+    && !entry.path.startsWith('/') && !entry.path.includes('\\')
+    && !entry.path.split('/').some((part) => !part || part === '.' || part === '..' || /[*?:]/.test(part)))
+    .map((entry) => ({ path: entry.path, name: entry.name.trim(), id: entry.name.trim().toLowerCase() }));
+}
+
+function vendorIdentity(packageText, readme) {
+  try {
+    const metadata = JSON.parse(packageText);
+    if (typeof metadata.name === 'string' && /^(@[\w.-]+\/)?[\w.-]+$/.test(metadata.name)
+      && typeof metadata.version === 'string' && /^\d+\.\d+/.test(metadata.version)) {
+      return { id: metadata.name, name: metadata.name, version: metadata.version };
+    }
+  } catch { /* A documented, pinned npm archive can identify a prebuilt bundle. */ }
+  const archive = /https:\/\/registry\.npmjs\.org\/((?:@[\w.-]+\/)?[\w.-]+)\/-\/[\w.-]+-(\d+\.\d+\.\d+(?:-[\w.-]+)?)\.tgz/.exec(readme || '');
+  if (!archive) {
+    return null;
+  }
+  const title = /^(?:#\s*)?(.+?)\s+v?\d+\.\d+\.\d+/.exec(readme.trim());
+  return { id: archive[1], name: title ? title[1] : archive[1], version: archive[2] };
+}
+
+function parseVendorTree(output) {
+  const files = new Map();
+  for (const entry of output.split('\0')) {
+    const match = /^(100644|100755) blob ([0-9a-f]+)\s+(\d+)\t([^]*)$/.exec(entry);
+    if (match) {
+      files.set(match[4], { oid: match[2], bytes: Number(match[3]) });
+    }
+  }
+  return files;
+}
+
+function vendorAt(filePath, roots) {
+  return roots.find((root) => filePath.startsWith(root.path + '/'));
+}
+
+async function vendorSnapshot(repoPath, ref, containers, declarations) {
+  const key = JSON.stringify([repoPath, ref, containers, declarations]);
+  if (vendorCache.has(key)) {
+    return vendorCache.get(key);
+  }
+  const snapshot = (async () => {
+    const result = await gitFull(repoPath, ['ls-tree', '-r', '-l', '-z', ref, '--', ...containers.map((p) => ':(literal)' + p)]);
+    if (result.code !== 0) {
+      throw new Error('could not read dependency tree');
+    }
+    const files = parseVendorTree(result.out);
+    const candidates = new Set(declarations.map((entry) => entry.path));
+    for (const file of files.keys()) {
+      const location = vendorLocation(file);
+      if (location) {
+        candidates.add(location.root);
+      }
+    }
+    const metadata = new Map();
+    for (const root of candidates) {
+      for (const name of ['package.json', 'README.md']) {
+        const file = files.get(root + '/' + name);
+        if (file && file.bytes <= VENDOR_METADATA_MAX) {
+          metadata.set(root + '/' + name, file.oid);
+        }
+      }
+    }
+    const blobs = await catBlobs(repoPath, [...new Set(metadata.values())]);
+    if ([...metadata.values()].some((oid) => !blobs.has(oid))) {
+      throw new Error('could not read dependency metadata');
+    }
+    const contents = (file) => blobs.get(metadata.get(file))?.toString('utf8') || '';
+    const roots = [];
+    for (const root of candidates) {
+      const declared = declarations.find((entry) => entry.path === root);
+      const identity = vendorIdentity(contents(root + '/package.json'), contents(root + '/README.md'));
+      if (declared || identity) {
+        roots.push({ ...identity, ...declared, path: root });
+      }
+    }
+    // The most specific declaration owns a file when vendor directories nest.
+    roots.sort((a, b) => b.path.length - a.path.length);
+    const libraries = new Map();
+    for (const [file, blob] of files) {
+      const root = vendorAt(file, roots);
+      if (!root) {
+        continue;
+      }
+      const library = libraries.get(root.id) || { name: root.name, bytes: 0, versions: new Set(), signature: [] };
+      library.bytes += blob.bytes;
+      if (root.version) {
+        library.versions.add(root.version);
+      }
+      library.signature.push(file + ':' + blob.oid);
+      libraries.set(root.id, library);
+    }
+    for (const library of libraries.values()) {
+      library.versions = [...library.versions].sort();
+      library.signature = library.signature.sort().join('\n');
+    }
+    return { roots, libraries };
+  })();
+  vendorCache.set(key, snapshot);
+  while (vendorCache.size > VENDOR_CACHE_MAX) {
+    vendorCache.delete(vendorCache.keys().next().value);
+  }
+  try {
+    return await snapshot;
+  } catch (error) {
+    vendorCache.delete(key);
+    throw error;
+  }
+}
+
+function dependencyChanges(base, head) {
+  const changes = [];
+  for (const id of new Set([...base.libraries.keys(), ...head.libraries.keys()])) {
+    const before = base.libraries.get(id), after = head.libraries.get(id);
+    if (before && after && before.signature === after.signature) {
+      continue;
+    }
+    changes.push({
+      name: (after || before).name,
+      kind: !before ? 'added' : !after ? 'removed' : 'updated',
+      baseBytes: before?.bytes || 0, headBytes: after?.bytes || 0,
+      baseVersions: before?.versions || [], headVersions: after?.versions || [],
+    });
+  }
+  return changes;
+}
+
+async function collectDependencies(repoPath, baseRef, headRef, files, renames) {
+  const declarations = vendorDeclarations(repoPath);
+  const containers = new Set(declarations.map((entry) => entry.path));
+  for (const file of files) {
+    for (const name of [file.path, renames[file.path]]) {
+      const location = name && vendorLocation(name);
+      if (location) {
+        containers.add(location.container);
+      }
+    }
+  }
+  if (!containers.size || !baseRef || !headRef) {
+    return { changes: [], baseRoots: [], headRoots: [] };
+  }
+  const paths = [...containers].sort();
+  const [base, head] = await Promise.all([
+    vendorSnapshot(repoPath, baseRef, paths, declarations),
+    vendorSnapshot(repoPath, headRef, paths, declarations),
+  ]);
+  for (const file of files) {
+    const vendor = vendorAt(file.path, head.roots) || vendorAt(renames[file.path] || file.path, base.roots);
+    if (vendor) {
+      file.vendor = vendor.name;
+    }
+  }
+  return { changes: dependencyChanges(base, head), baseRoots: base.roots, headRoots: head.roots };
+}
+
 // ── Complexity vs master ────────────────────────────────────────────────────
-// `qlty metrics` (https://qlty.sh) scores every changed source file at the
+// `qlty metrics` (https://qlty.sh) scores changed application and test files at the
 // merge base and at HEAD; the panel shows the difference, so a PR row says how
 // much harder to read its code got, not only how much longer. qlty only runs
 // inside a git repository carrying `.qlty/qlty.toml`, and the project must stay
@@ -615,7 +796,7 @@ function complexityTotals(scored, renames = {}) {
 // two sides the +/- numbers compare), adds `cx` to each scored file and returns
 // the totals — null when qlty is unavailable or the run failed, so the column
 // simply stays away.
-async function collectComplexity(repoPath, mergeBase, files, renames) {
+async function collectComplexity(repoPath, mergeBase, files, renames, dependencies, headRef = 'HEAD') {
   const cmd = qltyCommandPath();
   if (!cmd || cmd === qltyMissing || !mergeBase) return null;
   const root = await qltyRoot();
@@ -626,13 +807,17 @@ async function collectComplexity(repoPath, mergeBase, files, renames) {
     const ext = qltyExt(f.path);
     if (!ext) continue;
     const old = renames[f.path] || f.path;
-    wanted.push({ f, side: 'head', path: f.path, ext });
-    wanted.push({ f, side: 'base', path: old, ext: qltyExt(old) || ext });
+    if (!vendorAt(f.path, dependencies?.headRoots || [])) {
+      wanted.push({ f, side: 'head', path: f.path, ext });
+    }
+    if (!vendorAt(old, dependencies?.baseRoots || [])) {
+      wanted.push({ f, side: 'base', path: old, ext: qltyExt(old) || ext });
+    }
   }
   if (!wanted.length) return complexityTotals([]);
   const paths = (side) => [...new Set(wanted.filter((w) => w.side === side).map((w) => w.path))];
   const [headIds, baseIds] = await Promise.all([
-    treeBlobs(repoPath, 'HEAD', paths('head')),
+    treeBlobs(repoPath, headRef, paths('head')),
     treeBlobs(repoPath, mergeBase, paths('base')),
   ]);
   for (const w of wanted) {
@@ -709,6 +894,7 @@ function getHtml(nonce) {
   .cx-up { color: var(--vscode-charts-orange, #d18616); }
   .cx-down { color: var(--vscode-charts-green, #89d185); }
   .cx-zero { opacity: .6; }
+  .dependencies { font-size: .85em; margin-right: 8px; overflow: hidden; text-overflow: ellipsis; }
   .st-M { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
   .st-A, .st-U { color: var(--vscode-gitDecoration-untrackedResourceForeground); }
   .st-D { color: var(--vscode-gitDecoration-deletedResourceForeground); }
@@ -842,6 +1028,38 @@ function cxCell(cx) {
   return '<span class="cx ' + cls + '" title="' + esc(tip) + '"><span class="cxl">cx</span>' + signed(n) + '</span>';
 }
 
+function dependencySize(bytes) {
+  if (bytes < 1000) return bytes + ' B';
+  if (bytes < 1000000) return (bytes / 1000).toFixed(1) + ' kB';
+  return (bytes / 1000000).toFixed(1) + ' MB';
+}
+
+function dependencyCell(changes) {
+  if (changes === null) {
+    return '<span class="dependencies" title="Dependency inspection failed; vendor exclusions are unavailable">Dependencies unavailable</span>';
+  }
+  if (!changes || !changes.length) return '';
+  const count = changes.length;
+  const kinds = new Set(changes.map((change) => change.kind));
+  const noun = count === 1 ? 'dependency' : 'dependencies';
+  const kind = kinds.size === 1 ? changes[0].kind : 'mixed';
+  let label = kind === 'added' ? '+' + count + ' ' + noun
+    : kind === 'removed' ? '−' + count + ' ' + noun
+    : count + ' ' + noun + (kind === 'updated' ? ' updated' : ' changed');
+  if (count === 1) label += ' · ' + changes[0].name;
+  const bytes = changes.reduce((sum, change) => sum + (change.kind === 'removed' ? change.baseBytes : change.headBytes), 0);
+  label += ' · ' + dependencySize(bytes);
+  const details = changes.map((change) => change.name + ' (' + change.kind + '): '
+    + (change.baseVersions.join(', ') || '—') + ' → ' + (change.headVersions.join(', ') || '—') + ', '
+    + dependencySize(change.baseBytes) + ' → ' + dependencySize(change.headBytes)).join('; ');
+  const tip = details + '. Uncompressed tracked vendor files, not browser transfer size. Vendor code is excluded from cx.';
+  return '<span class="dependencies" title="' + esc(tip) + '">' + esc(label) + '</span>';
+}
+
+function vendorCell(name) {
+  return '<span class="cx cx-zero" title="' + esc(name + ': vendored dependency, excluded from application and test complexity') + '">vendor</span>';
+}
+
 function row(depth, opts) {
   const pad = 4 + depth * 14;
   const twist = opts.twist === undefined ? '<span class="twist"></span>'
@@ -895,7 +1113,7 @@ function render() {
     let repoCols = (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
-      repoCols = cxCell(v.cx && (v.cx.files || v.cx.tests.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
+      repoCols = dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.tests.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr), dim: repoDim,
@@ -936,12 +1154,12 @@ function render() {
         : 'not behind master';
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
-        cols: cxCell(v.cx && (v.cx.files || v.cx.tests.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
+        cols: dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.tests.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
         btns: (syncEnabled && !r.ci) ? '<button class="sbtn" data-repo="' + esc(r.repoPath) + '" title="merge master in, run the full test suite, launch a fix agent on failure">⇣ sync + test</button>' : '',
         act: 't|' + vid + '|0' });
       if (!vc) for (const f of v.files) {
         h += fileRow(2, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
-          v.cx ? cxCell(f.cx || null) : '');
+          f.vendor && !f.cx ? vendorCell(f.vendor) : v.cx ? cxCell(f.cx || null) : '');
       }
     }
 

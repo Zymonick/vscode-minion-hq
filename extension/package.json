@@ -81,7 +81,7 @@
         "scmDiffStats.qltyCommand": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: the cognitive-complexity change of every file vs master and the branch total, from `qlty metrics` at the merge base and at HEAD. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
+          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: cognitive-complexity changes vs master, from `qlty metrics` at the merge base and at HEAD. The branch total counts application code; test complexity is shown separately in its tooltip and on individual test files. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
         }
       }
     }

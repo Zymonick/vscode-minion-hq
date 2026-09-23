@@ -58,4 +58,4 @@ Bump `version` in `extension/package.json` **and** in `extension.vsixmanifest` w
 
 The same `./ci.sh` runs in GitHub Actions on every push and pull request. It only checks and packages the extension; it does not publish releases or install it. Locally, `NODE_BIN=/path/to/node ./ci.sh` selects a specific Node executable.
 
-Before pushing, run `./ci.sh`, review your changes, then commit the source and `.github/workflows/ci.yml`. Generated `.vsix` files are ignored.
+[AGENTS.md](AGENTS.md) defines the required completion workflow for agent changes. Generated `.vsix` files are ignored.

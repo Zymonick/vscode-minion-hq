@@ -889,6 +889,7 @@ function getHtml(nonce) {
   .cx-up { color: var(--vscode-charts-orange, #d18616); }
   .cx-down { color: var(--vscode-charts-green, #89d185); }
   .cx-zero { opacity: .6; }
+  .cx-excluded { color: var(--vscode-descriptionForeground, #999); }
   .dependencies { font-size: .85em; margin-right: 8px; overflow: hidden; text-overflow: ellipsis; }
   .st-M { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
   .st-A, .st-U { color: var(--vscode-gitDecoration-untrackedResourceForeground); }
@@ -1010,7 +1011,7 @@ function cxCell(cx) {
   if (cx === undefined) return '';
   if (!cx) return '<span class="cx"></span>';
   const n = cx.cognitive;
-  const cls = n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
+  const cls = cx.test ? 'cx-excluded' : n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
   const label = cx.test ? 'Test' : 'Application';
   let tip = label + ' cognitive complexity ' + cx.base + ' → ' + cx.head + ' (' + signed(n) + '), cyclomatic '
     + signed(cx.cyclo);
@@ -1054,7 +1055,7 @@ function dependencyCell(changes) {
 }
 
 function vendorCell(name) {
-  return '<span class="cx cx-zero" title="' + esc(name + ': vendored dependency, excluded from application and test complexity') + '">vendor</span>';
+  return '<span class="cx cx-excluded" title="' + esc(name + ': vendored dependency, excluded from application and test complexity') + '">vendor</span>';
 }
 
 function row(depth, opts) {

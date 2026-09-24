@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="scm-diff-stats" Version="0.13.4" Publisher="simon"/>
+    <Identity Language="en-US" Id="scm-diff-stats" Version="0.13.6" Publisher="simon"/>
     <DisplayName>Minion HQ</DisplayName>
+    <Icon>extension/media/minion-hq.png</Icon>
     <Description xml:space="preserve">A command center for your worktrees, diffs, and branch tools.</Description>
     <Categories>Other</Categories>
     <Properties>
@@ -15,6 +16,7 @@
   </Installation>
   <Dependencies/>
   <Assets>
+    <Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/media/minion-hq.png" Addressable="true"/>
     <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true"/>
   </Assets>
 </PackageManifest>

@@ -23,7 +23,14 @@ function fixture(t) {
   git('config', 'user.email', 'test@example.com');
   git('config', 'commit.gpgsign', 'false');
   git('remote', 'add', 'origin', remote);
-  fs.copyFileSync(path.join(__dirname, '..', '..', 'deploy.sh'), path.join(repo, 'deploy.sh'));
+  const deploy = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy.sh'), 'utf8')
+    .replace('/home/azrael/vscode-minion-hq/.git', path.join(repo, '.git'))
+    .replace('git@github.com:Zymonick/vscode-minion-hq.git', remote);
+  fs.writeFileSync(path.join(repo, 'deploy.sh'), deploy, { mode: 0o755 });
+  fs.mkdirSync(path.join(repo, 'extension'));
+  fs.writeFileSync(path.join(repo, 'extension', 'package.json'), JSON.stringify({
+    publisher: 'simon', name: 'scm-diff-stats', version: '0.13.6',
+  }));
   fs.writeFileSync(path.join(repo, '.nvmrc'), process.versions.node.split('.')[0] + '\n');
   fs.writeFileSync(path.join(repo, 'ci.sh'), '#!/bin/sh\necho checked >> .git/deploy-events\nexit "${TEST_CI_EXIT:-0}"\n', { mode: 0o755 });
   fs.writeFileSync(path.join(repo, 'build.sh'), '#!/bin/sh\necho installed >> .git/deploy-events\nexit "${TEST_INSTALL_EXIT:-0}"\n', { mode: 0o755 });
@@ -37,7 +44,7 @@ function fixture(t) {
   });
   const events = () => fs.readFileSync(path.join(repo, '.git', 'deploy-events'), 'utf8').trim().split('\n');
   const change = () => fs.writeFileSync(path.join(repo, 'README.md'), 'updated\n');
-  return { repo, remote, caller, git, run, events, change };
+  return { root, repo, remote, caller, command, git, run, events, change };
 }
 
 test('deploy from another folder follows its symlink, checks, commits, pushes, and installs', (t) => {
@@ -89,4 +96,67 @@ test('detached HEAD is refused before checks or mutations', (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Checkout a branch/);
   assert.equal(fs.existsSync(path.join(f.repo, '.git', 'deploy-events')), false);
+});
+
+function assertRefused(f, reason) {
+  const head = f.git('rev-parse', 'HEAD');
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, reason);
+  assert.equal(f.git('rev-parse', 'HEAD'), head);
+  assert.equal(fs.existsSync(path.join(f.repo, '.git', 'deploy-events')), false);
+  assert.equal(f.git('--git-dir', f.remote, 'for-each-ref'), '');
+}
+
+test('another repository is refused even with the same origin and package identity', (t) => {
+  const f = fixture(t);
+  const other = path.join(f.root, 'other repo');
+  f.git('clone', f.repo, other);
+  cp.execFileSync('git', ['remote', 'set-url', 'origin', f.remote], { cwd: other });
+  fs.unlinkSync(f.command);
+  fs.symlinkSync(path.join(other, 'deploy.sh'), f.command);
+  assertRefused(f, /restricted to the Minion HQ repository/);
+});
+
+test('worktrees of the pinned repository can deploy through the shortcut', (t) => {
+  const f = fixture(t);
+  const worktree = path.join(f.root, 'worktree');
+  f.git('worktree', 'add', '-b', 'worktree-release', worktree);
+  for (const name of ['ci.sh', 'build.sh']) {
+    const file = path.join(worktree, name);
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('.git/deploy-events', 'deploy-events'));
+  }
+  fs.unlinkSync(f.command);
+  fs.symlinkSync(path.join(worktree, 'deploy.sh'), f.command);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.git('--git-dir', f.remote, 'rev-parse', 'worktree-release'),
+    cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).trim());
+});
+
+test('different fetch origins and additional push destinations are refused', (t) => {
+  const f = fixture(t);
+  f.git('remote', 'set-url', 'origin', path.join(f.root, 'unapproved.git'));
+  assertRefused(f, /pinned Minion HQ origin/);
+  f.git('remote', 'set-url', 'origin', f.remote);
+  f.git('config', '--add', 'remote.origin.pushurl', f.remote);
+  f.git('config', '--add', 'remote.origin.pushurl', path.join(f.root, 'unapproved.git'));
+  assertRefused(f, /pinned Minion HQ origin/);
+});
+
+test('another extension identity or unsafe version is refused', (t) => {
+  const f = fixture(t);
+  const file = path.join(f.repo, 'extension', 'package.json');
+  fs.writeFileSync(file, JSON.stringify({ publisher: 'other', name: 'extension', version: '1.0.0' }));
+  assertRefused(f, /only simon.scm-diff-stats/);
+  fs.writeFileSync(file, JSON.stringify({ publisher: 'simon', name: 'scm-diff-stats', version: '../other' }));
+  assertRefused(f, /numeric Minion HQ release version/);
+});
+
+test('master and main are refused before checks, commits, pushes, or installation', (t) => {
+  const f = fixture(t);
+  for (const branch of ['master', 'main']) {
+    f.git('checkout', '-b', branch);
+    assertRefused(f, /Deploy from a task branch/);
+  }
 });

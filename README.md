@@ -38,9 +38,9 @@ Minion HQ updates the existing SCM Diff Stats installation. The extension ID `si
 
 ## Deploy
 
-Run `minion-hq-deploy` from any folder, optionally followed by a quoted commit message. It runs CI, commits all pending changes in its Minion HQ checkout, pushes that checkout's current branch to `origin`, and builds and installs the extension locally. A failed check or push stops deployment; installation failure leaves the pushed commit available for retry. Reload the VS Code window after installation. The command uses Node.js 24 from PATH or nvm; `NODE_BIN` overrides detection.
+Run `/home/azrael/.local/bin/minion-hq-deploy` from any folder, optionally followed by a quoted commit message. It runs CI, commits all pending changes in its Minion HQ checkout, pushes that checkout's current branch to `origin`, and builds and installs the extension locally. A failed check or push stops deployment; installation failure leaves the pushed commit available for retry. Reload the VS Code window after installation. The command uses Node.js 24 from PATH or nvm; `NODE_BIN` overrides detection.
 
-Install the command once from the desired checkout with `mkdir -p "$HOME/.local/bin"` and `ln -s "$PWD/deploy.sh" "$HOME/.local/bin/minion-hq-deploy"`. Keep that checkout on disk and include `$HOME/.local/bin` in PATH. The script follows the symlink to its checkout and pushes the current branch without merging it into another branch. Running `./deploy.sh` directly has the same behavior.
+Install the command once from the desired checkout with `mkdir -p "$HOME/.local/bin"` and `ln -s "$PWD/deploy.sh" "$HOME/.local/bin/minion-hq-deploy"`. Keep that checkout on disk and include `$HOME/.local/bin` in PATH. The script follows the symlink to its checkout. Deployment accepts only worktrees of `/home/azrael/vscode-minion-hq`, the exact `git@github.com:Zymonick/vscode-minion-hq.git` origin, a task branch other than `master` or `main`, and the `simon.scm-diff-stats` extension. It pushes the current branch without merging it into another branch. Running `./deploy.sh` directly has the same behavior.
 
 ## Develop
 

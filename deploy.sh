@@ -22,7 +22,31 @@ DEPLOY_BRANCH=$(git symbolic-ref --quiet --short HEAD) || {
   echo 'Checkout a branch before deploying Minion HQ.' >&2
   exit 1
 }
-git remote get-url origin >/dev/null
+if [[ $(git rev-parse --path-format=absolute --git-common-dir) != "/home/azrael/vscode-minion-hq/.git" ]]; then
+  echo 'Deployment is restricted to the Minion HQ repository and its worktrees.' >&2
+  exit 1
+fi
+if [[ "$DEPLOY_BRANCH" == master || "$DEPLOY_BRANCH" == main ]]; then
+  echo 'Deploy from a task branch, not master or main.' >&2
+  exit 1
+fi
+DEPLOY_REMOTE='git@github.com:Zymonick/vscode-minion-hq.git'
+if [[ $(git remote get-url --all origin) != "$DEPLOY_REMOTE" || $(git remote get-url --push --all origin) != "$DEPLOY_REMOTE" ]]; then
+  echo 'Deployment requires only the pinned Minion HQ origin for fetch and push.' >&2
+  exit 1
+fi
+python3 - <<'PYTHON'
+import json
+import re
+import sys
+
+with open('extension/package.json') as source:
+    package = json.load(source)
+if (package.get('publisher'), package.get('name')) != ('simon', 'scm-diff-stats'):
+    sys.exit('Deployment can install only simon.scm-diff-stats.')
+if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', package.get('version', '')):
+    sys.exit('Deployment requires a numeric Minion HQ release version.')
+PYTHON
 if [[ -n $(git ls-files --unmerged) ]]; then
   echo 'Resolve merge conflicts before deploying Minion HQ.' >&2
   exit 1

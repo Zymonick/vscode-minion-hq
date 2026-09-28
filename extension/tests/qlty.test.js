@@ -89,6 +89,8 @@ test('conventional test files and helpers are classified without matching simila
     'widget.test.tsx', 'widget.spec.js', 'orders_test.go', 'order_spec.rb',
     'src/test/java/Order.java', 'OrderTest.java', 'OrderTests.cs', 'OrderTestCase.java',
     'OrderSpec.scala', 'app\\tests\\helpers.py',
+    'kylie/tests_visual/engine.py', 'app\\tests_visual\\fixtures.py',
+    'tests-e2e/pages/login.ts', 'test_support/client.py', 'spec_helpers/factory.rb',
   ]) {
     assert.equal(isTestPath(name), true, name);
   }
@@ -115,11 +117,30 @@ test('added and removed tests do not offset application complexity', () => {
   assert.equal(added.cx.test, true);
 });
 
+test('visual suite infrastructure stays out of the application total', () => {
+  const { complexityTotals } = load();
+  const files = ['engine.py', 'fixtures.py', 'workspaces.py', 'scenarios.py'].map((name) => ({
+    path: 'kylie/tests_visual/' + name,
+  }));
+  const total = complexityTotals([
+    ...files.map((f) => ({ f, head: { complex: 20, cyclo: 30 }, base: null })),
+    { f: { path: 'invoice/views.py' }, head: { complex: 5, cyclo: 8 }, base: { complex: 2, cyclo: 4 } },
+  ]);
+  assert.equal(total.cognitive, 3);
+  assert.equal(total.cyclo, 4);
+  assert.equal(total.files, 1);
+  assert.equal(total.tests.cognitive, 80);
+  assert.equal(total.tests.files, 4);
+  assert.ok(files.every((f) => f.cx.test));
+});
+
 test('renames classify the merge-base and HEAD paths independently', () => {
   const { complexityTotals } = load();
   for (const [oldPath, newPath, appDelta] of [
     ['helper.py', 'tests/helper.py', -4],
     ['tests/helper.py', 'helper.py', 4],
+    ['helper.py', 'kylie/tests_visual/engine.py', -4],
+    ['kylie/tests_visual/engine.py', 'helper.py', 4],
   ]) {
     const total = complexityTotals([
       { f: { path: newPath }, head: { complex: 4, cyclo: 6 }, base: { complex: 4, cyclo: 6 } },
@@ -156,7 +177,7 @@ function renderComplexity(scored, collapsed) {
 test('test-only changes show neutral application complexity and a separate test tooltip', () => {
   for (const collapsed of [false, true]) {
     const html = renderComplexity([
-      { f: { path: 'tests.py' }, head: { complex: 9, cyclo: 12 }, base: { complex: 2, cyclo: 4 } },
+      { f: { path: 'kylie/tests_visual/engine.py' }, head: { complex: 9, cyclo: 12 }, base: { complex: 2, cyclo: 4 } },
     ], collapsed);
     assert.match(html, /class="cx cx-zero" title="Application cognitive complexity 0 → 0 \(0\)/);
     assert.match(html, /Tests: 2 → 9 \(\+7\), cyclomatic \+8 \(excluded from application total\)/);

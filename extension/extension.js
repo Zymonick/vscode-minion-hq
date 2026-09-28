@@ -742,7 +742,7 @@ function qltyRun(cmd, root, files) {
 function isTestPath(filePath) {
   const parts = filePath.replace(/\\/g, '/').split('/');
   const name = parts.pop();
-  if (parts.some((part) => /^(?:tests?|__tests__|__mocks__|specs?)$/i.test(part))) {
+  if (parts.some((part) => /^(?:(?:tests?|specs?)(?:[_-].+)?|__tests__|__mocks__)$/i.test(part))) {
     return true;
   }
   return /^(?:tests?|conftest)\.[^.]+$/i.test(name)

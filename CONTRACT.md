@@ -1,5 +1,14 @@
 # Minion HQ contract
 
+## Repository order
+
+Kylie appears first, followed by `pr-N` worktrees in ascending numeric order.
+Other worktrees follow in natural folder-name order, with their full paths
+breaking ties. This order applies during incremental loading, refreshes, and
+repository additions or removals, regardless of Git's discovery order.
+Rediscovering the same repositories in a different order must not restart
+their active scan.
+
 ## Complexity
 
 The branch `cx` rating measures application code complexity. For Kylie, only

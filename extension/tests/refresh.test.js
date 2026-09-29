@@ -205,6 +205,52 @@ test('discovery order changes keep the active scan and visible row order', async
   assert.deepEqual([...provider.data.keys()], work.calls);
 });
 
+test('rows keep Kylie first and PRs in numeric order throughout incremental loading', async () => {
+  const work = deferredRepos();
+  const { StatsViewProvider } = load(work);
+  const provider = new StatsViewProvider();
+  const paths = ['/repos/pr-401', '/repos/pr-505', '/repos/pr-540', '/repos/kylie',
+    '/repos/.audit-jjlacizx', '/repos/pr-357', '/repos/pr-10', '/repos/pr-9'];
+  const expected = ['/repos/kylie', '/repos/pr-9', '/repos/pr-10', '/repos/pr-357',
+    '/repos/pr-401', '/repos/pr-505', '/repos/pr-540', '/repos/.audit-jjlacizx'];
+  const messages = [];
+  provider.view = { webview: { postMessage: (message) => messages.push(message) } };
+  provider.setRepos(paths);
+  const done = provider.refreshPromise;
+  await tick();
+  // Finish later rows first to exercise partial updates as well as the final list.
+  while (work.pending.length) {
+    work.pending.pop()();
+    await tick();
+  }
+  await done;
+  assert.deepEqual(work.calls, expected);
+  assert.deepEqual(Array.from(messages.at(-1).repos, (r) => r.repoPath), expected);
+  assert.ok(messages.some((message) => message.loading));
+  for (const message of messages) {
+    const visible = Array.from(message.repos, (r) => r.repoPath);
+    assert.deepEqual(visible, expected.filter((repoPath) => visible.includes(repoPath)));
+  }
+  provider.setRepos([...paths].reverse());
+  assert.equal(provider.refreshPromise, null, 'rediscovery must not start another scan');
+  assert.deepEqual(Array.from(provider.repos), expected);
+});
+
+test('newly discovered Kylie and PR worktrees take their sorted positions', async () => {
+  const { StatsViewProvider } = load();
+  const provider = new StatsViewProvider();
+  provider.setRepos(['/repos/pr-540', '/repos/.audit']);
+  await provider.refreshPromise;
+  provider.setRepos(['/repos/pr-540', '/repos/.audit', '/repos/pr-10', '/repos/kylie', '/repos/pr-9']);
+  await provider.refreshPromise;
+  assert.deepEqual([...provider.data.keys()],
+    ['/repos/kylie', '/repos/pr-9', '/repos/pr-10', '/repos/pr-540', '/repos/.audit']);
+  provider.setRepos(['/repos/.audit', '/repos/pr-540', '/repos/kylie', '/repos/pr-10']);
+  await provider.refreshPromise;
+  assert.deepEqual([...provider.data.keys()],
+    ['/repos/kylie', '/repos/pr-10', '/repos/pr-540', '/repos/.audit']);
+});
+
 test('removed repositories stop consuming queued collection work', async () => {
   const work = deferredRepos();
   const { StatsViewProvider } = load(work);

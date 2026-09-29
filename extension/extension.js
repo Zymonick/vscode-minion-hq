@@ -1491,6 +1491,15 @@ function findClaudeBin() {
   return 'claude';
 }
 
+function compareRepoPaths(a, b) {
+  const aName = path.basename(a);
+  const bName = path.basename(b);
+  const rank = (name) => name.toLowerCase() === 'kylie' ? 0 : /^pr-\d+$/.test(name) ? 1 : 2;
+  return rank(aName) - rank(bName)
+    || aName.localeCompare(bName, undefined, { numeric: true })
+    || a.localeCompare(b);
+}
+
 class StatsViewProvider {
   constructor() {
     this.view = null;
@@ -1730,7 +1739,7 @@ class StatsViewProvider {
       return;
     }
     this.reposKnown = true;
-    this.repos = [...paths];
+    this.repos = [...paths].sort(compareRepoPaths);
     this.loading = true;
     this.refresh();
   }

@@ -188,6 +188,23 @@ test('rediscovering identical worktrees does not queue a redundant startup scan'
   await done;
 });
 
+test('discovery order changes keep the active scan and visible row order', async () => {
+  const work = deferredRepos();
+  const { StatsViewProvider } = load(work);
+  const provider = new StatsViewProvider();
+  provider.setRepos(['/repos/a', '/repos/b', '/repos/c']);
+  const done = provider.refreshPromise;
+  await tick();
+  provider.setRepos(['/repos/c', '/repos/a', '/repos/b']);
+  while (work.pending.length) {
+    work.pending.shift()();
+    await tick();
+  }
+  await done;
+  assert.deepEqual(work.calls, ['/repos/a', '/repos/b', '/repos/c']);
+  assert.deepEqual([...provider.data.keys()], work.calls);
+});
+
 test('removed repositories stop consuming queued collection work', async () => {
   const work = deferredRepos();
   const { StatsViewProvider } = load(work);

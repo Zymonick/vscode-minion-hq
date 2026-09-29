@@ -1711,7 +1711,10 @@ class StatsViewProvider {
   }
 
   setRepos(paths) {
-    if (this.reposKnown && paths.length === this.repos.length && paths.every((p, i) => p === this.repos[i])) {
+    // Git discovers siblings in a different order from `worktree list`.
+    // Keep the active scan and row order when membership has not changed.
+    const known = new Set(this.repos);
+    if (this.reposKnown && paths.length === known.size && paths.every((p) => known.has(p))) {
       return;
     }
     this.reposKnown = true;
@@ -1937,8 +1940,29 @@ function activate(context) {
   );
 
   let timer;
-  // replaced once the repository source is known (git API, else workspace folders)
-  let syncRepos = () => provider.refresh();
+  let discoveryPromise = null;
+  let discoveryPending = false;
+  const syncRepos = () => {
+    discoveryPending = true;
+    if (discoveryPromise) {
+      return discoveryPromise;
+    }
+    discoveryPromise = Promise.resolve().then(async () => {
+      while (discoveryPending) {
+        discoveryPending = false;
+        const paths = gitApi && gitApi.repositories.length
+          ? gitApi.repositories.map((r) => r.rootUri.fsPath)
+          : await workspaceRepos();
+        provider.setRepos(await expandWorktrees(paths));
+      }
+    }).catch((error) => log('discovery: ' + error.message)).finally(() => {
+      discoveryPromise = null;
+      if (discoveryPending) {
+        return syncRepos();
+      }
+    });
+    return discoveryPromise;
+  };
   const scheduleRefresh = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -1950,12 +1974,20 @@ function activate(context) {
   // workspace folder (ci new creates worktrees without touching the workspace)
   const expandWorktrees = async (paths) => {
     const all = new Set(paths);
+    const discovered = new Set();
     for (const p of paths) {
+      if (discovered.has(p)) {
+        continue;
+      }
       const out = await git(p, ['worktree', 'list', '--porcelain']);
+      discovered.add(p);
       for (const line of out.split('\n')) {
         if (line.startsWith('worktree ')) {
           const wt = line.slice(9).trim();
-          if (wt && fs.existsSync(wt)) all.add(wt);
+          if (wt && fs.existsSync(wt)) {
+            all.add(wt);
+            discovered.add(wt);
+          }
         }
       }
     }
@@ -1967,43 +1999,33 @@ function activate(context) {
     const gitExt = vscode.extensions.getExtension('vscode.git');
     if (!gitExt) return false;
     gitApi = (await gitExt.activate()).getAPI(1);
-    const sync = () =>
-      expandWorktrees(gitApi.repositories.map((r) => r.rootUri.fsPath)).then((ps) => provider.setRepos(ps));
-    syncRepos = sync;
     context.subscriptions.push(gitApi.onDidOpenRepository((repo) => {
       context.subscriptions.push(repo.state.onDidChange(scheduleRefresh));
-      sync();
+      syncRepos();
     }));
-    context.subscriptions.push(gitApi.onDidCloseRepository(sync));
+    context.subscriptions.push(gitApi.onDidCloseRepository(syncRepos));
     for (const repo of gitApi.repositories) {
       context.subscriptions.push(repo.state.onDidChange(scheduleRefresh));
     }
-    sync();
     return gitApi.repositories.length > 0;
   };
 
-  const syncFolders = () => {
+  const workspaceRepos = () => {
     const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
     return Promise.all(
       folders.map(async (f) => ((await git(f, ['rev-parse', '--is-inside-work-tree'])).trim() === 'true' ? f : null))
-    ).then((rs) => expandWorktrees(rs.filter(Boolean))).then((ps) => provider.setRepos(ps));
+    ).then((rs) => rs.filter(Boolean));
   };
 
-  wireGitApi().then((ok) => {
-    if (!ok) {
-      syncRepos = syncFolders;
-      syncFolders();
-    }
-  });
+  wireGitApi().then(syncRepos);
 
   // worktrees outside the workspace get no git-extension change events;
   // a slow poll keeps their rows (and the land-readiness state) current
   const repoPoll = setInterval(() => {
     if (gitApi && gitApi.repositories.length) {
-      expandWorktrees(gitApi.repositories.map((r) => r.rootUri.fsPath)).then((ps) => {
-        if (ps.length !== provider.repos.length || ps.some((p) => !provider.repos.includes(p))) {
-          provider.setRepos(ps);
-        } else {
+      const previous = provider.repos;
+      syncRepos().then(() => {
+        if (provider.repos === previous) {
           scheduleRefresh();
         }
       });

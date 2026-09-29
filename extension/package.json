@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.11",
+  "version": "0.13.12",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -92,7 +92,7 @@
               "path": { "type": "string", "minLength": 1, "description": "Exact repository-relative vendor directory, without a trailing slash or wildcards." }
             }
           },
-          "markdownDescription": "Additional vendored libraries, for example `[{\"name\":\"Example\",\"path\":\"assets/example\"}]`. These directories are excluded from **cx** and reported separately with their uncompressed tracked size. Libraries with package metadata or a pinned npm archive in README.md are also recognized under `vendor/`, `third_party/`, `third-party/`, and `staticfiles/`. Application code outside identified library directories stays counted."
+          "markdownDescription": "Additional vendored libraries, for example `[{\"name\":\"Example\",\"path\":\"assets/example\"}]`. These directories are excluded from **cx** and line totals and reported separately with their uncompressed tracked size. Libraries with package metadata or a pinned npm archive in README.md are also recognized under `vendor/`, `third_party/`, `third-party/`, and `staticfiles/`. Application code outside identified library directories stays counted."
         },
         "scmDiffStats.qltyCommand": {
           "type": "string",

@@ -9,6 +9,22 @@ repository additions or removals, regardless of Git's discovery order.
 Rediscovering the same repositories in a different order must not restart
 their active scan.
 
+## Line totals
+
+Worktree, Staged, Changes, Vs master, collapsed worktree, and commit line totals
+exclude root `docs/` files and the same CI, test, and identified vendor paths
+as application complexity. Reuse the complexity path classifier and vendor
+identification rules. Application templates, styles, and other unscored file
+types still contribute their changed lines.
+
+Classify additions by their destination path and revision, and deletions by
+their source path and revision, including renames. Staged changes compare
+HEAD with the index; unstaged changes compare the index with working files.
+Untracked additions use working-copy vendor metadata. Reuse immutable vendor
+metadata across refreshes; index and working metadata must remain current.
+Line totals must work without qlty. Individual file counts, file visibility,
+diffs, file counts, and commit counts retain excluded files.
+
 ## Complexity
 
 The branch `cx` rating measures application code complexity. For Kylie, only

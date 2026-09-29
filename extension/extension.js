@@ -126,8 +126,12 @@ function parseNumstat(out) {
     const binary = m[1] === '-';
     let p = m[3];
     const r = p.match(/^(.*)\{(.*) => (.*)\}(.*)$/) || p.match(/^(.*) => (.*)$/);
-    if (r) p = r.length === 5 ? r[1] + r[3] + r[4] : r[2];
-    files.push({ path: p, add: binary ? null : +m[1], del: binary ? null : +m[2], binary });
+    const oldPath = r ? (r.length === 5 ? r[1] + r[2] + r[4] : r[1]) : null;
+    if (r) {
+      p = r.length === 5 ? r[1] + r[3] + r[4] : r[2];
+    }
+    files.push({ path: p, ...(oldPath ? { oldPath } : {}),
+      add: binary ? null : +m[1], del: binary ? null : +m[2], binary });
   }
   return files;
 }
@@ -155,10 +159,22 @@ function parseRenames(out) {
   return map;
 }
 
-function sumFiles(files) {
+function isExcludedLinePath(filePath) {
   // Git quotes paths containing non-ASCII or special characters.
-  return files.filter((f) => !f.path.startsWith('docs/') && !f.path.startsWith('"docs/'))
-    .reduce((t, f) => ({ add: t.add + (f.add || 0), del: t.del + (f.del || 0) }), { add: 0, del: 0 });
+  const normalized = filePath.replace(/^"|"$/g, '');
+  return normalized.startsWith('docs/') || isVerificationPath(normalized);
+}
+
+function sumFiles(files) {
+  return files.reduce((total, file) => {
+    if (!file.vendorHead && !isExcludedLinePath(file.path)) {
+      total.add += file.add || 0;
+    }
+    if (!file.vendorBase && !isExcludedLinePath(file.oldPath || file.path)) {
+      total.del += file.del || 0;
+    }
+    return total;
+  }, { add: 0, del: 0 });
 }
 
 async function countLines(file) {
@@ -207,6 +223,11 @@ async function collectRepo(repoPath, testing) {
     const n = await countLines(path.join(repoPath, p));
     untracked.push({ path: p, add: n, del: n == null ? null : 0, binary: n == null, untracked: true, letter: 'U' });
   }
+  const declarations = vendorDeclarations(repoPath);
+  // Reuse metadata within this scan; index and working files can change between scans.
+  const lineRoots = new Map();
+  await markLineVendors(repoPath, 'HEAD', '', staged, declarations, lineRoots);
+  await markLineVendors(repoPath, '', null, [...unstaged, ...untracked], declarations, lineRoots);
 
   let vsMaster = null;
   let masterSha = '';
@@ -253,11 +274,13 @@ async function collectRepo(repoPath, testing) {
     : await git(repoPath, ['log', '-n', '30', '--pretty=format:%x01%H%x02%h%x02%s%x02%cr', '--numstat']);
 
   const commits = [];
+  const commitChanges = new Map();
   for (const entry of logOut.split('\x01')) {
     if (!entry.trim()) continue;
     const lines = entry.split('\n');
     const [hash, short, subject, when] = lines[0].split('\x02');
     const files = parseNumstat(lines.slice(1).join('\n'));
+    commitChanges.set(hash, files);
     commits.push({ hash, short, subject, when, ...sumFiles(files), files: files.length });
   }
   const shownCommits = vsMaster
@@ -266,6 +289,11 @@ async function collectRepo(repoPath, testing) {
       ? commits.slice(0, aheadUpstream)
       : commits.slice(0, 8);
   const commitsLabel = `Commits (${shownCommits.length})`;
+  for (const commit of shownCommits) {
+    const files = commitChanges.get(commit.hash);
+    await markLineVendors(repoPath, commit.hash + '^', commit.hash, files, declarations, lineRoots);
+    Object.assign(commit, sumFiles(files));
+  }
 
   const totals = sumFiles([...staged, ...unstaged, ...untracked]);
   const dirtyCount = staged.length + unstaged.length + untracked.length;
@@ -555,6 +583,54 @@ function vendorAt(filePath, roots) {
   return roots.find((root) => filePath.startsWith(root.path + '/'));
 }
 
+const lineVendorCache = new Map();
+
+async function markLineVendors(repoPath, baseRef, headRef, files, declarations, cache) {
+  for (const [side, ref] of [['Base', baseRef], ['Head', headRef]]) {
+    for (const file of files) {
+      if (!(side === 'Base' ? file.del : file.add)) {
+        continue;
+      }
+      const name = side === 'Base' ? file.oldPath || file.path : file.path;
+      if (vendorAt(name, declarations)) {
+        file['vendor' + side] = true;
+        continue;
+      }
+      const location = vendorLocation(name);
+      if (!location) {
+        continue;
+      }
+      const immutable = ref && /^[a-f0-9]{40,64}\^?$/.test(ref);
+      const roots = immutable ? lineVendorCache : cache;
+      const key = JSON.stringify([repoPath, ref, location.root]);
+      if (!roots.has(key)) {
+        const contents = [];
+        for (const metadata of ['package.json', 'README.md']) {
+          const metadataPath = location.root + '/' + metadata;
+          let content = '';
+          if (ref === null) {
+            try {
+              const absolute = path.join(repoPath, metadataPath);
+              const stat = await fs.promises.stat(absolute);
+              if (stat.isFile() && stat.size <= VENDOR_METADATA_MAX) {
+                content = await fs.promises.readFile(absolute, 'utf8');
+              }
+            } catch { /* Missing metadata does not identify a library. */ }
+          } else {
+            content = await git(repoPath, ['show', ref + ':' + metadataPath]);
+          }
+          contents.push(Buffer.byteLength(content) <= VENDOR_METADATA_MAX ? content : '');
+        }
+        roots.set(key, !!vendorIdentity(...contents));
+        while (roots.size > VENDOR_CACHE_MAX) {
+          roots.delete(roots.keys().next().value);
+        }
+      }
+      file['vendor' + side] = roots.get(key);
+    }
+  }
+}
+
 async function vendorSnapshot(repoPath, ref, containers, declarations) {
   const key = JSON.stringify([repoPath, ref, containers, declarations]);
   if (vendorCache.has(key)) {
@@ -666,7 +742,11 @@ async function collectDependencies(repoPath, baseRef, headRef, files, renames) {
     vendorSnapshot(repoPath, headRef, paths, declarations),
   ]);
   for (const file of files) {
-    const vendor = vendorAt(file.path, head.roots) || vendorAt(renames[file.path] || file.path, base.roots);
+    const headVendor = vendorAt(file.path, head.roots);
+    const baseVendor = vendorAt(renames[file.path] || file.path, base.roots);
+    file.vendorHead = !!headVendor;
+    file.vendorBase = !!baseVendor;
+    const vendor = headVendor || baseVendor;
     if (vendor) {
       file.vendor = vendor.name;
     }
@@ -1376,6 +1456,9 @@ window.addEventListener('message', (ev) => {
   }
 });
 
+const CI_SUPPORT_PATHS = new Set(${JSON.stringify([...CI_SUPPORT_PATHS])});
+${isVerificationPath.toString()}
+${isExcludedLinePath.toString()}
 ${sumFiles.toString()}
 
 vscode.postMessage({ type: 'ready' });

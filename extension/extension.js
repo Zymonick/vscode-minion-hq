@@ -34,9 +34,87 @@ function gitFull(cwd, args) {
 // (file added or deleted between the two sides).
 const EMPTY_SCHEME = 'scm-diff-stats-empty';
 const emptyUri = (uri) => uri.with({ scheme: EMPTY_SCHEME });
+const REVISION_SCHEME = 'scm-diff-stats-revision';
 
-async function existsAtRef(repoPath, ref, relPath) {
-  return (await gitFull(repoPath, ['cat-file', '-e', `${ref}:${relPath}`])).code === 0;
+function readGit(repoPath, args) {
+  return new Promise((resolve, reject) => {
+    cp.execFile('git', ['--literal-pathspecs', ...args], {
+      cwd: repoPath, encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 15000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }, (error, stdout, stderr) => {
+      if (error) {
+        error.message = error.killed ? 'Git read timed out.' : String(stderr || error.message).trim();
+        reject(error);
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+async function revisionUri(repoPath, ref, relPath) {
+  const uri = vscode.Uri.file(path.join(repoPath, relPath));
+  if (ref === null) {
+    return emptyUri(uri);
+  }
+  // Resolve to a blob now: even an index snapshot stays stable after another stage/commit.
+  const index = ref === '';
+  const output = await readGit(repoPath, index
+    ? ['ls-files', '--stage', '-z', '--', relPath]
+    : ['ls-tree', '-z', ref, '--', relPath]);
+  const entry = output.toString().split('\0').find((line) => line.slice(line.indexOf('\t') + 1) === relPath);
+  if (!entry) {
+    return emptyUri(uri);
+  }
+  const fields = entry.slice(0, entry.indexOf('\t')).split(' ');
+  if (index && fields[2] !== '0') {
+    // A conflicted index has multiple stages; keep its working file accessible.
+    return revisionUri(repoPath, 'HEAD', relPath);
+  }
+  if (!index && fields[1] !== 'blob') {
+    throw new Error('This entry is not a file.');
+  }
+  return uri.with({ scheme: REVISION_SCHEME,
+    query: JSON.stringify({ repoPath, blob: fields[index ? 1 : 2] }) });
+}
+
+function revisionSource(uri) {
+  const source = JSON.parse(uri.query);
+  if (!path.isAbsolute(source.repoPath) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(source.blob)) {
+    throw new Error('Invalid revision.');
+  }
+  return source;
+}
+
+const revisionFileSystem = {
+  watch() { return { dispose() {} }; },
+  async stat(uri) {
+    const { repoPath, blob } = revisionSource(uri);
+    const size = Number((await readGit(repoPath, ['cat-file', '-s', blob])).toString());
+    return { type: vscode.FileType.File, ctime: 0, mtime: 0, size };
+  },
+  readFile(uri) {
+    const { repoPath, blob } = revisionSource(uri);
+    return readGit(repoPath, ['cat-file', 'blob', blob]);
+  },
+  readDirectory() { throw vscode.FileSystemError.FileNotADirectory(); },
+  createDirectory() { throw vscode.FileSystemError.NoPermissions(); },
+  writeFile() { throw vscode.FileSystemError.NoPermissions(); },
+  delete() { throw vscode.FileSystemError.NoPermissions(); },
+  rename() { throw vscode.FileSystemError.NoPermissions(); },
+};
+
+async function workingUri(repoPath, relPath) {
+  const uri = vscode.Uri.file(path.join(repoPath, relPath));
+  try {
+    await fs.promises.stat(uri.fsPath);
+    return uri;
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return emptyUri(uri);
+    }
+    throw error;
+  }
 }
 
 function parseNumstat(out) {
@@ -1143,7 +1221,7 @@ function render() {
       const st = sumFiles(files);
       h += row(1, { hdr: true, twist: sc, name: esc(label) + ' (' + files.length + ')',
         cols: cols(st.add, st.del, null, false), act: 't|' + sid + '|' + (dflt ? 1 : 0) });
-      if (!sc) for (const f of files) h += fileRow(2, r.repoPath, f, 'w|' + r.repoPath + '|' + f.path);
+      if (!sc) for (const f of files) h += fileRow(2, r.repoPath, f, (kind === 'staged' ? 's|' : 'w|') + r.repoPath + '|' + f.path);
     }
 
     if (r.vsMaster) {
@@ -1250,9 +1328,9 @@ document.addEventListener('click', (ev) => {
       }
     }
     toggle(id, dflt);
-  } else if (type === 'w') {
+  } else if (type === 'w' || type === 's') {
     const i = rest.indexOf('|');
-    vscode.postMessage({ type: 'open', mode: 'working', repoPath: rest.slice(0, i), path: rest.slice(i + 1) });
+    vscode.postMessage({ type: 'open', mode: type === 's' ? 'staged' : 'working', repoPath: rest.slice(0, i), path: rest.slice(i + 1) });
   } else if (type === 'm') {
     const [repoPath, mergeBase, ...p] = rest.split('|');
     vscode.postMessage({ type: 'open', mode: 'vsmaster', repoPath, mergeBase, path: p.join('|') });
@@ -1783,31 +1861,49 @@ class StatsViewProvider {
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));
       const base = path.basename(m.path);
       try {
-        if (m.mode === 'working') {
-          await vscode.commands.executeCommand('git.openChange', uri).then(undefined, () =>
-            vscode.commands.executeCommand('vscode.open', uri)
-          );
-        } else if (m.mode === 'vsmaster' && gitApi) {
-          // a side that does not exist (file added/deleted on the branch)
-          // must be an empty document, not a nonexistent git object
-          const left = (await existsAtRef(m.repoPath, m.mergeBase, m.path))
-            ? gitApi.toGitUri(uri, m.mergeBase)
-            : emptyUri(uri);
-          const right = fs.existsSync(uri.fsPath) ? uri : emptyUri(uri);
+        if (m.mode === 'working' || m.mode === 'staged') {
+          let ref = '';
+          let basePath = m.path;
+          if (m.mode === 'staged') {
+            try {
+              ref = (await readGit(m.repoPath, ['rev-parse', '--verify', '--quiet', 'HEAD'])).toString().trim();
+            } catch (error) {
+              if (error.code !== 1) {
+                throw error;
+              }
+              ref = null; // An unborn branch has no HEAD side.
+            }
+            const names = await readGit(m.repoPath, ['diff', '--cached', '--name-status', '--find-renames']);
+            basePath = parseRenames(names.toString())[m.path] || m.path;
+          }
+          const [left, right] = await Promise.all([
+            revisionUri(m.repoPath, ref, basePath),
+            m.mode === 'staged' ? revisionUri(m.repoPath, '', m.path) : workingUri(m.repoPath, m.path),
+          ]);
+          if (m.mode === 'working' && left.scheme === EMPTY_SCHEME && right.scheme === 'file') {
+            await vscode.commands.executeCommand('vscode.open', right);
+          } else {
+            await vscode.commands.executeCommand('vscode.diff', left, right,
+              `${base} (${m.mode === 'staged' ? 'HEAD ↔ index' : 'index ↔ working tree'})`);
+          }
+        } else if (m.mode === 'vsmaster') {
+          const basePath = this.data.get(m.repoPath)?.vsMaster?.renames?.[m.path] || m.path;
+          const [left, right] = await Promise.all([
+            revisionUri(m.repoPath, m.mergeBase, basePath), workingUri(m.repoPath, m.path),
+          ]);
           await vscode.commands.executeCommand('vscode.diff', left, right, `${base} (master ↔ branch)`);
-        } else if (m.mode === 'commit' && gitApi) {
-          const left = (await existsAtRef(m.repoPath, `${m.hash}^`, m.path))
-            ? gitApi.toGitUri(uri, `${m.hash}^`)
-            : emptyUri(uri);
-          const right = (await existsAtRef(m.repoPath, m.hash, m.path))
-            ? gitApi.toGitUri(uri, m.hash)
-            : emptyUri(uri);
+        } else if (m.mode === 'commit') {
+          const revisions = (await readGit(m.repoPath, ['rev-list', '--parents', '-n', '1', m.hash])).toString().trim().split(' ');
+          const [left, right] = await Promise.all([
+            revisionUri(m.repoPath, revisions[1] || null, m.path), revisionUri(m.repoPath, revisions[0], m.path),
+          ]);
           await vscode.commands.executeCommand('vscode.diff', left, right, `${base} @ ${m.hash.slice(0, 7)}`);
         } else {
           await vscode.commands.executeCommand('vscode.open', uri);
         }
-      } catch {
-        vscode.commands.executeCommand('vscode.open', uri);
+      } catch (error) {
+        log('open: ' + m.repoPath + '/' + m.path + ': ' + error.message);
+        vscode.window.showErrorMessage(`Could not open ${base}: ${error.message}`);
       }
     }
   }
@@ -1822,6 +1918,11 @@ function activate(context) {
       provideTextDocumentContent: () => '',
     })
   );
+  const revisionEmitter = new vscode.EventEmitter();
+  context.subscriptions.push(revisionEmitter);
+  context.subscriptions.push(vscode.workspace.registerFileSystemProvider(REVISION_SCHEME, {
+    ...revisionFileSystem, onDidChangeFile: revisionEmitter.event,
+  }, { isReadonly: true, isCaseSensitive: true }));
 
   const decoEmitter = new vscode.EventEmitter();
   context.subscriptions.push(

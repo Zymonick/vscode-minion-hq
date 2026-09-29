@@ -153,7 +153,7 @@ test('complexity scoring skips vendor sides and still scores the application ada
   assert.equal(vendor.cx, undefined);
   assert.equal(adapter.cx.head, 3);
   assert.equal(total.files, 1);
-  assert.equal(total.tests.files, 1);
+  assert.equal(total.checks.files, 1);
   assert.ok(context.scoredPaths.every(([, paths]) => paths.length === 2 && !paths.includes(vendor.path)));
 
   const moved = { path: 'vendor/lib/adapter.js' };

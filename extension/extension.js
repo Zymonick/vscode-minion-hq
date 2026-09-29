@@ -817,14 +817,26 @@ function qltyRun(cmd, root, files) {
   });
 }
 
-function isTestPath(filePath) {
-  const parts = filePath.replace(/\\/g, '/').split('/');
+const CI_SUPPORT_PATHS = new Set([
+  'scripts/ci', 'scripts/ci.bash', 'scripts/ci_settings.py',
+  'scripts/audit_runner.py', 'scripts/quick_runner.py', 'scripts/quick_tests.py',
+  'scripts/benchmark_request_timing.py',
+  'scripts/land_checks.py', 'scripts/land_migrations.py', 'scripts/refresh-local-db',
+  'kylie/management/commands/visual_baselines.py',
+]);
+
+function isVerificationPath(filePath) {
+  const normalized = filePath.replace(/\\/g, '/');
+  if (CI_SUPPORT_PATHS.has(normalized)) {
+    return true;
+  }
+  const parts = normalized.split('/');
   const name = parts.pop();
-  if (parts.some((part) => /^(?:(?:tests?|specs?)(?:[_-].+)?|__tests__|__mocks__)$/i.test(part))) {
+  if (parts.some((part) => /^(?:(?:tests?|testing|specs?|ci)(?:[_-].+)?|__tests__|__mocks__|\.github|\.gitlab|\.circleci|\.buildkite)$/i.test(part))) {
     return true;
   }
   return /^(?:tests?|conftest)\.[^.]+$/i.test(name)
-    || /^(?:test|spec)_.+\.[^.]+$/i.test(name)
+    || /^(?:tests?|specs?)_.+\.[^.]+$/i.test(name)
     || /[._](?:tests?|specs?)\.[^.]+$/i.test(name)
     || /(?:Test|Tests|TestCase|Spec|Specs)\.[^.]+$/.test(name);
 }
@@ -833,11 +845,11 @@ function isTestPath(filePath) {
 // with its qlty row at HEAD and at the merge base (null where the file does
 // not exist on that side or qlty produced no row). Files qlty scored on
 // neither side get no `cx` and do not count; an added or deleted file counts
-// from or to zero. Test scores stay separate from the application total;
+// from or to zero. CI and test scores stay separate from the application total;
 // renames classify each side by its own path.
 function complexityTotals(scored, renames = {}) {
   const total = { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 };
-  total.tests = { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 };
+  total.checks = { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 };
   for (const { f, head, base } of scored) {
     if (!head && !base) {
       continue;
@@ -845,9 +857,9 @@ function complexityTotals(scored, renames = {}) {
     const h = head || { complex: 0, cyclo: 0 };
     const b = base || { complex: 0, cyclo: 0 };
     f.cx = { cognitive: h.complex - b.complex, cyclo: h.cyclo - b.cyclo, head: h.complex, base: b.complex };
-    const headTotal = isTestPath(f.path) ? total.tests : total;
-    const baseTotal = isTestPath(renames[f.path] || f.path) ? total.tests : total;
-    f.cx.test = headTotal === total.tests;
+    const headTotal = isVerificationPath(f.path) ? total.checks : total;
+    const baseTotal = isVerificationPath(renames[f.path] || f.path) ? total.checks : total;
+    f.cx.excluded = headTotal === total.checks;
     headTotal.cognitive += h.complex;
     headTotal.cyclo += h.cyclo;
     headTotal.head += h.complex;
@@ -1089,15 +1101,15 @@ function cxCell(cx) {
   if (cx === undefined) return '';
   if (!cx) return '<span class="cx"></span>';
   const n = cx.cognitive;
-  const cls = cx.test ? 'cx-excluded' : n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
-  const label = cx.test ? 'Test' : 'Application';
+  const cls = cx.excluded ? 'cx-excluded' : n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
+  const label = cx.excluded ? 'CI and test' : 'Application';
   let tip = label + ' cognitive complexity ' + cx.base + ' → ' + cx.head + ' (' + signed(n) + '), cyclomatic '
     + signed(cx.cyclo);
-  if (cx.tests && cx.tests.files) {
-    const t = cx.tests;
-    tip += '; Tests: ' + t.base + ' → ' + t.head + ' (' + signed(t.cognitive) + '), cyclomatic '
+  if (cx.checks && cx.checks.files) {
+    const t = cx.checks;
+    tip += '; CI and tests: ' + t.base + ' → ' + t.head + ' (' + signed(t.cognitive) + '), cyclomatic '
       + signed(t.cyclo) + ' (excluded from application total)';
-  } else if (cx.test) {
+  } else if (cx.excluded) {
     tip += ' (excluded from application total)';
   }
   tip += ' — qlty metrics, merge base vs HEAD';
@@ -1192,7 +1204,7 @@ function render() {
     let repoCols = (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
-      repoCols = dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.tests.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
+      repoCols = dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr), dim: repoDim,
@@ -1233,7 +1245,7 @@ function render() {
         : 'not behind master';
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
-        cols: dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.tests.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
+        cols: dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
         btns: (syncEnabled && !r.ci) ? '<button class="sbtn" data-repo="' + esc(r.repoPath) + '" title="merge master in, run the full test suite, launch a fix agent on failure">⇣ sync + test</button>' : '',
         act: 't|' + vid + '|0' });
       if (!vc) for (const f of v.files) {

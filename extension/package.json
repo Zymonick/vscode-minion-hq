@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.9",
+  "version": "0.13.10",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -97,7 +97,7 @@
         "scmDiffStats.qltyCommand": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: cognitive-complexity changes vs master, from `qlty metrics` at the merge base and at HEAD. The branch total counts application code; test complexity is shown separately in its tooltip and on individual test files. Identified vendored libraries are excluded and reported separately. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
+          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: cognitive-complexity changes vs master, from `qlty metrics` at the merge base and at HEAD. The branch total counts application code; CI and test infrastructure is excluded and shown separately in its tooltip and in grey on individual files. Identified vendored libraries are excluded and reported separately. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
         }
       }
     }

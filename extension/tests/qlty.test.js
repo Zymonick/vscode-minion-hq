@@ -14,7 +14,7 @@ function load() {
     workspace: { getConfiguration: () => ({ get: () => '' }) },
     window: { createOutputChannel: () => ({ appendLine() {} }) },
   };
-  return vm.runInNewContext(source + '\n({ parseQltyTable, qltyExt, isTestPath, complexityTotals, getHtml });', {
+  return vm.runInNewContext(source + '\n({ parseQltyTable, qltyExt, isVerificationPath, complexityTotals, getHtml });', {
     module: { exports: {} },
     process,
     Buffer,
@@ -70,18 +70,18 @@ test('deltas count merge base vs HEAD, added and deleted files from or to zero',
     { f: deleted, head: null, base: { complex: 3, cyclo: 4 } },
     { f: template, head: null, base: null },
   ]);
-  assert.deepEqual(plain(modified.cx), { cognitive: 5, cyclo: 7, head: 14, base: 9, test: false });
-  assert.deepEqual(plain(added.cx), { cognitive: 5, cyclo: 8, head: 5, base: 0, test: false });
-  assert.deepEqual(plain(deleted.cx), { cognitive: -3, cyclo: -4, head: 0, base: 3, test: false });
+  assert.deepEqual(plain(modified.cx), { cognitive: 5, cyclo: 7, head: 14, base: 9, excluded: false });
+  assert.deepEqual(plain(added.cx), { cognitive: 5, cyclo: 8, head: 5, base: 0, excluded: false });
+  assert.deepEqual(plain(deleted.cx), { cognitive: -3, cyclo: -4, head: 0, base: 3, excluded: false });
   assert.equal(template.cx, undefined);
   assert.deepEqual(plain(total), {
     cognitive: 7, cyclo: 11, head: 19, base: 12, files: 3,
-    tests: { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 },
+    checks: { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 },
   });
 });
 
 test('conventional test files and helpers are classified without matching similar source names', () => {
-  const { isTestPath } = load();
+  const { isVerificationPath } = load();
   for (const name of [
     'invoice/tests.py', 'test.py', 'scripts/tests/helpers.py', 'test/support.js',
     'src/__tests__/widget.tsx', '__mocks__/client.js', 'spec/factories/user.rb',
@@ -92,10 +92,10 @@ test('conventional test files and helpers are classified without matching simila
     'kylie/tests_visual/engine.py', 'app\\tests_visual\\fixtures.py',
     'tests-e2e/pages/login.ts', 'test_support/client.py', 'spec_helpers/factory.rb',
   ]) {
-    assert.equal(isTestPath(name), true, name);
+    assert.equal(isVerificationPath(name), true, name);
   }
-  for (const name of ['invoice/models.py', 'contest.py', 'latest.js', 'testimonials.ts', 'specification.rb', 'testing/client.py']) {
-    assert.equal(isTestPath(name), false, name);
+  for (const name of ['invoice/models.py', 'contest.py', 'latest.js', 'testimonials.ts', 'specification.rb', 'scripts/kylie_cases.py', 'scripts/performance.py', 'invoice/audit_runner.py', 'invoice/ci_report.py']) {
+    assert.equal(isVerificationPath(name), false, name);
   }
 });
 
@@ -110,11 +110,11 @@ test('added and removed tests do not offset application complexity', () => {
   ]);
   assert.deepEqual(plain(total), {
     cognitive: -5, cyclo: -4, head: 3, base: 8, files: 1,
-    tests: { cognitive: 10, cyclo: 13, head: 12, base: 2, files: 2 },
+    checks: { cognitive: 10, cyclo: 13, head: 12, base: 2, files: 2 },
   });
   assert.equal(added.cx.cognitive, 12);
   assert.equal(removed.cx.cognitive, -2);
-  assert.equal(added.cx.test, true);
+  assert.equal(added.cx.excluded, true);
 });
 
 test('visual suite infrastructure stays out of the application total', () => {
@@ -129,9 +129,44 @@ test('visual suite infrastructure stays out of the application total', () => {
   assert.equal(total.cognitive, 3);
   assert.equal(total.cyclo, 4);
   assert.equal(total.files, 1);
-  assert.equal(total.tests.cognitive, 80);
-  assert.equal(total.tests.files, 4);
-  assert.ok(files.every((f) => f.cx.test));
+  assert.equal(total.checks.cognitive, 80);
+  assert.equal(total.checks.files, 4);
+  assert.ok(files.every((f) => f.cx.excluded));
+});
+
+test('CI and test infrastructure never changes application complexity', () => {
+  const { complexityTotals } = load();
+  for (const name of [
+    'scripts/audit_runner.py', 'scripts/quick_runner.py', 'scripts/ci_settings.py',
+    'scripts/land_checks.py', 'scripts/land_migrations.py', 'scripts/benchmark_request_timing.py',
+    'leaveMgmt/tests_feedback.py', 'specs_orders.py', 'scripts\\audit_runner.py',
+    'ci/helpers.py', '.github/actions/check/index.js', '.gitlab/check.py',
+    '.circleci/check.py', '.buildkite/check.py', 'testing/client.py',
+    'kylie/management/commands/visual_baselines.py',
+  ]) {
+    for (const [head, base] of [[9, 2], [9, null], [null, 2]]) {
+      const total = complexityTotals([
+        { f: { path: name },
+          head: head === null ? null : { complex: head, cyclo: head + 1 },
+          base: base === null ? null : { complex: base, cyclo: base + 1 } },
+      ]);
+      assert.equal(total.cognitive, 0, name);
+      assert.equal(total.cyclo, 0, name);
+      assert.equal(total.files, 0, name);
+    }
+  }
+});
+
+test('CI complexity cannot offset Kylie application changes', () => {
+  const { complexityTotals } = load();
+  const total = complexityTotals([
+    { f: { path: 'scripts/audit_runner.py' }, head: { complex: 40, cyclo: 50 }, base: { complex: 2, cyclo: 4 } },
+    { f: { path: 'invoice/views.py' }, head: { complex: 3, cyclo: 5 }, base: { complex: 8, cyclo: 9 } },
+    { f: { path: 'scripts/kylie_cases.py' }, head: { complex: 2, cyclo: 3 }, base: { complex: 2, cyclo: 3 } },
+  ]);
+  assert.equal(total.cognitive, -5);
+  assert.equal(total.cyclo, -4);
+  assert.equal(total.files, 2);
 });
 
 test('renames classify the merge-base and HEAD paths independently', () => {
@@ -141,14 +176,30 @@ test('renames classify the merge-base and HEAD paths independently', () => {
     ['tests/helper.py', 'helper.py', 4],
     ['helper.py', 'kylie/tests_visual/engine.py', -4],
     ['kylie/tests_visual/engine.py', 'helper.py', 4],
+    ['helper.py', 'scripts/audit_runner.py', -4],
+    ['scripts/audit_runner.py', 'helper.py', 4],
   ]) {
     const total = complexityTotals([
       { f: { path: newPath }, head: { complex: 4, cyclo: 6 }, base: { complex: 4, cyclo: 6 } },
     ], { [newPath]: oldPath });
     assert.equal(total.cognitive, appDelta);
-    assert.equal(total.tests.cognitive, -appDelta);
+    assert.equal(total.checks.cognitive, -appDelta);
     assert.equal(total.files, 1);
-    assert.equal(total.tests.files, 1);
+    assert.equal(total.checks.files, 1);
+  }
+});
+
+test('PR 535 CI-only changes have a neutral total and grey file scores', () => {
+  for (const collapsed of [false, true]) {
+    const html = renderComplexity([
+      { f: { path: 'scripts/audit_runner.py' }, head: { complex: 9, cyclo: 12 }, base: { complex: 2, cyclo: 4 } },
+      { f: { path: 'scripts/tests/test_ci_audit.py' }, head: { complex: 6, cyclo: 8 }, base: { complex: 3, cyclo: 4 } },
+    ], collapsed);
+    assert.match(html, /class="cx cx-zero" title="Application cognitive complexity 0 → 0 \(0\)/);
+    assert.match(html, /CI and tests: 5 → 15 \(\+10\)/);
+    if (!collapsed) {
+      assert.match(html, /class="cx cx-excluded" title="CI and test cognitive complexity 2 → 9 \(\+7\)/);
+    }
   }
 });
 
@@ -180,9 +231,9 @@ test('test-only changes show neutral application complexity and a separate test 
       { f: { path: 'kylie/tests_visual/engine.py' }, head: { complex: 9, cyclo: 12 }, base: { complex: 2, cyclo: 4 } },
     ], collapsed);
     assert.match(html, /class="cx cx-zero" title="Application cognitive complexity 0 → 0 \(0\)/);
-    assert.match(html, /Tests: 2 → 9 \(\+7\), cyclomatic \+8 \(excluded from application total\)/);
+    assert.match(html, /CI and tests: 2 → 9 \(\+7\), cyclomatic \+8 \(excluded from application total\)/);
     if (!collapsed) {
-      assert.match(html, /Test cognitive complexity 2 → 9 \(\+7\)/);
+      assert.match(html, /CI and test cognitive complexity 2 → 9 \(\+7\)/);
     }
   }
 });
@@ -193,7 +244,7 @@ test('mixed changes keep the application color and unscored changes hide the tot
     { f: { path: 'tests.py' }, head: { complex: 10, cyclo: 14 }, base: null },
   ], true);
   assert.match(html, /class="cx cx-down" title="Application cognitive complexity 6 → 2 \(−4\)/);
-  assert.match(html, /Tests: 0 → 10 \(\+10\)/);
+  assert.match(html, /CI and tests: 0 → 10 \(\+10\)/);
   assert.doesNotMatch(renderComplexity([
     { f: { path: 'README.md' }, head: null, base: null },
   ], true), /class="cx/);

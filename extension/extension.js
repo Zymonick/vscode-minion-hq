@@ -3,6 +3,7 @@ const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 
 const CI_TASK_TYPE = 'scm-diff-stats-ci';
 const REPO_CONCURRENCY = 2;
@@ -298,7 +299,10 @@ async function collectRepo(repoPath, testing) {
   const totals = sumFiles([...staged, ...unstaged, ...untracked]);
   const dirtyCount = staged.length + unstaged.length + untracked.length;
   const ci = await collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha);
-  const pr = await collectPr(repoPath, masterSha, testing);
+  if (ci && testing && testing.has(ci.serial)) {
+    ci.state = 'testing'; ci.reason = 'A CI operation is running'; ci.checkLabel = 'Checks running';
+  }
+  const pr = await collectPr(repoPath, masterSha, testing, ci);
   return {
     repoPath,
     name: path.basename(repoPath),
@@ -478,11 +482,9 @@ function scanTestingSerials(prWorktrees) {
 }
 
 // The PR identity of a worktree: its serial, the label CI recorded for it, and
-// its status in the precedence scripts/rename-session applies —
-// landed > testing > green > open. The worktree being on screen is what
-// rename-session reads as `open`, so a sibling .ci is the only thing a pr-N
-// folder needs to carry a status; "gone" cannot occur here for the same reason.
-async function collectPr(repoPath, masterSha, testing) {
+// its effective readiness. Landed and running CI operations take precedence;
+// a stored test result alone never declares completion.
+async function collectPr(repoPath, masterSha, testing, readiness) {
   const m = path.basename(repoPath).match(/^pr-(\d+)$/);
   if (!m) return null;
   const serial = +m[1];
@@ -493,40 +495,93 @@ async function collectPr(repoPath, masterSha, testing) {
   let status = '';
   if ((await landedSerials(repoPath, masterSha)).has(serial)) status = 'landed';
   else if (testing && testing.has(serial)) status = 'testing';
-  else if (fs.existsSync(path.join(ciState, 'pr-' + serial + '.tested.json'))) status = 'green';
-  else if (known) status = 'open';
-  return (label || status) ? { serial, label, status } : null;
+  else if (readiness) status = readiness.state;
+  else if (known) status = 'wip';
+  return (label || status) ? { serial, label, status, reason: readiness && readiness.reason } : null;
 }
 
-// Land-readiness of a scripts/ci PR worktree: the .ci/pr-N.tested.json green
-// record must name exactly this HEAD, and master must not have moved since.
+// Completion and technical checks are separate. CI owns the completion seal;
+// edits, later commits and missing evidence fail closed in this read-only view.
+function readCiJson(directory, name) {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
-  if (!ciCommandPath()) return null;
-  if (!branch || branch === 'master') return null;
+  if (!branch || branch === 'master' || branch === 'main') return null;
   const m = path.basename(repoPath).match(/^pr-(\d+)$/);
   if (!m) return null;
   const serial = +m[1];
-  // only new-style PRs (with their docs/PR_N folder) — not old review worktrees
   if (!fs.existsSync(path.join(repoPath, 'docs', 'PR_' + serial))) return null;
   const ciState = ciStateDir(repoPath);
-  let tested = null;
-  try {
-    tested = JSON.parse(fs.readFileSync(path.join(ciState, 'pr-' + serial + '.tested.json')));
-  } catch { /* no green record yet */ }
+  const tested = readCiJson(ciState, 'pr-' + serial + '.tested.json');
+  const seal = readCiJson(ciState, 'pr-' + serial + '.ready.json');
   const headSha = (await git(repoPath, ['rev-parse', 'HEAD'])).trim();
-  let state, reason = '';
-  if (dirtyCount || !tested || tested.branch_sha !== headSha) {
-    state = 'untested';
-    reason = dirtyCount
-      ? 'working tree changed since the last green run'
-      : tested ? 'HEAD is not the tested revision' : 'no green test record';
-  } else if ((vsMaster && vsMaster.behind > 0) || tested.master_sha !== masterSha) {
-    state = 'behind';
-    reason = 'master moved since the green run';
-  } else {
-    state = 'ready';
+  const sha = /^[0-9a-f]{40}$/;
+  const validProof = tested && sha.test(tested.branch_sha) && sha.test(tested.master_sha)
+    && tested.gate_policy === 6 && tested.fingerprint_version === 2
+    && /^[0-9a-f]{64}$/.test(tested.fingerprint) && typeof tested.time === 'string'
+    && Array.isArray(tested.targets) && tested.targets.every((target) => typeof target === 'string' && target)
+    && ((tested.suite === 'inert' || tested.suite === 'full') ? tested.targets.length === 0
+      : tested.suite === 'ci-self' ? tested.targets.join(',') === 'scripts.quick_tests'
+        : tested.suite === 'smoke' ? tested.targets.length > 0 : false);
+  const currentCheck = validProof && !dirtyCount && sha.test(headSha) && tested.branch_sha === headSha;
+  const checkNames = { smoke: 'Smoke passed', inert: 'Configuration passed', 'ci-self': 'CI checks passed', full: 'Full suite passed' };
+  const checkLabel = currentCheck ? checkNames[tested.suite] : tested ? 'Checks stale' : 'Checks missing';
+  let markers;
+  try {
+    markers = fs.readdirSync(repoPath).filter((name) => name.startsWith('status_')
+      && fs.statSync(path.join(repoPath, name)).isFile());
+  } catch {
+    return { serial, state: 'verification-needed', reason: 'Cannot read task state', checkLabel };
   }
-  return { serial, state, reason, suite: tested && tested.suite, time: tested && tested.time };
+  const marker = markers.length === 1 && /^status_(wip|ready|blocked)(?:-[a-z0-9._-]+)?$/.exec(markers[0]);
+  let state = 'verification-needed', reason = '';
+  if (!markers.length || (marker && marker[1] === 'wip')) {
+    state = 'wip'; reason = 'Completion has not been declared';
+  } else if (marker && marker[1] === 'blocked') {
+    state = 'blocked'; reason = markers[0].replace(/^status_blocked-?/, '') || 'Awaiting a decision or repair';
+  } else if (!marker) {
+    reason = 'Conflicting or invalid task markers';
+  } else if (dirtyCount) {
+    reason = 'Working tree changed after verification';
+  } else if (!validProof || !sha.test(headSha) || tested.branch_sha !== headSha) {
+    reason = 'No current technical check evidence';
+  } else if (!seal || seal.version !== 1 || seal.branch_sha !== headSha) {
+    reason = 'Completion is missing or belongs to an earlier revision';
+  } else if (['master_sha', 'gate_policy', 'fingerprint_version'].some((key) => seal[key] !== tested[key])
+    || seal.proof_fingerprint !== tested.fingerprint) {
+    reason = 'Check evidence changed after completion';
+  } else {
+    let digest = '';
+    try {
+      digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(repoPath, 'docs', 'PR_' + serial, 'completion.json'))).digest('hex');
+    } catch { /* A missing record cannot establish completion. */ }
+    if (!digest || digest !== seal.record_sha256) {
+      reason = 'Completion record changed or is missing';
+    } else if ((vsMaster && vsMaster.behind > 0) || tested.master_sha !== masterSha) {
+      reason = 'Integration check needed: master moved';
+    } else {
+      state = 'ready'; reason = 'Completed scope and verification sealed for this revision';
+    }
+  }
+  return { serial, state, reason, checkLabel, suite: tested && tested.suite, time: tested && tested.time };
+}
+
+async function currentCi(repoPath) {
+  const [branch, master, status] = await Promise.all([
+    gitFull(repoPath, ['symbolic-ref', '--short', 'HEAD']),
+    gitFull(repoPath, ['rev-parse', 'master']),
+    gitFull(repoPath, ['status', '--porcelain']),
+  ]);
+  if (branch.code || master.code || status.code) {
+    return { state: 'verification-needed', reason: 'Cannot read current repository state' };
+  }
+  return collectCi(repoPath, branch.out.trim(), null, status.out.trim() ? 1 : 0, master.out.trim());
 }
 
 // ── Vendored dependencies vs master ─────────────────────────────────────────
@@ -1091,10 +1146,12 @@ function getHtml(nonce) {
   .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
-  .prst-green { color: var(--vscode-charts-green, #89d185); }
+  .prst-blocked, .prst-verification-needed { color: var(--vscode-charts-yellow, #d7ba7d); }
+  .prst-ready { color: var(--vscode-charts-green, #89d185); }
   .prst-open { color: var(--vscode-descriptionForeground); }
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .cist { margin-left: 6px; flex: none; font-weight: 700; cursor: default; }
+  .ci-checks { color: var(--vscode-descriptionForeground, #aaa); }
   .ci-ready { color: var(--vscode-charts-green, #89d185); }
   .ci-behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .ci-untested { color: var(--vscode-charts-yellow, #d7ba7d); }
@@ -1119,28 +1176,32 @@ state.drafts = state.drafts || {};
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-// the status scripts/rename-session puts in every session title for this PR
+// Effective task readiness; the check result is displayed separately.
 const PR_STATUS_TIP = {
   landed: 'landed — master carries the squash commit for this PR',
   testing: 'testing — a live ci test / ci land run holds the lock for this PR',
-  green: 'green — tested, awaiting land',
+  ready: 'Completion and verification recorded for the current revision',
+  wip: 'Work in progress; passed checks do not establish completion',
+  blocked: 'Awaiting a decision or repair',
+  'verification-needed': 'Completion or current verification is missing',
   open: 'open — the worktree exists; no green test record yet',
   gone: 'gone — CI knows this PR, but its worktree is gone',
 };
 
-// "[green] case number labels" — the session title's own label and status.
+// Task state accompanies its existing case number and summary.
 // The status sits outside the dimmed label so its colour reads at full strength.
 function prTag(pr) {
   if (!pr || !pr.status) return '';
   return '<span class="prst prst-' + esc(pr.status) + '" title="'
-    + esc(PR_STATUS_TIP[pr.status] || pr.status) + '">[' + esc(pr.status) + ']</span>';
+    + esc(pr.reason || PR_STATUS_TIP[pr.status] || pr.status) + '">[' + esc(pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }
 
 function ciBtn(repoPath, serial, cmd, glyph, tip, blocked) {
   return '<button class="ibtn' + (blocked ? ' blocked' : '') + '" data-repo="' + esc(repoPath)
-    + '" data-serial="' + serial + '" data-cmd="' + cmd + '" title="' + esc(tip) + '">' + glyph + '</button>';
+    + '" data-serial="' + serial + '" data-cmd="' + cmd + '" title="' + esc(tip)
+    + '"' + (blocked ? ' disabled aria-disabled="true"' : '') + '>' + glyph + '</button>';
 }
 
 function ciHtml(r) {
@@ -1149,20 +1210,11 @@ function ciHtml(r) {
   }
   if (!r.ci) return '';
   const c = r.ci, s = c.serial;
-  let st;
-  if (c.state === 'ready') {
-    st = '<span class="cist ci-ready" title="tested (' + esc(c.suite || '') + ') ' + esc(c.time || '')
-      + ' — ready to land">✓</span>';
-  } else if (c.state === 'behind') {
-    st = '<span class="cist ci-behind" title="land blocked: behind master — ' + esc(c.reason)
-      + '. Run ci test ' + s + '.">↓</span>';
-  } else {
-    st = '<span class="cist ci-untested" title="land blocked: not tested — ' + esc(c.reason)
-      + '. Run ci test ' + s + '.">○</span>';
-  }
-  return ciBtn(r.repoPath, s, 'preview', '▷', 'ci preview ' + s + ' — start the preview server and open the changed pages in Edge')
-    + ciBtn(r.repoPath, s, 'test', '⇣', 'ci test ' + s + ' --fix — sync with master, run the gate, let Claude fix failures')
-    + ciBtn(r.repoPath, s, 'land', '⇪', 'ci land ' + s + ' — squash-merge onto master (interactive terminal)', c.state !== 'ready')
+  const st = '<span class="cist ci-checks" title="' + esc(c.reason) + '">' + esc(c.checkLabel || 'Checks unknown') + '</span>';
+  if (!ciEnabled) return st;
+  return ciBtn(r.repoPath, s, 'preview', '▷', 'ci preview ' + s + ' — open the preview')
+    + ciBtn(r.repoPath, s, 'test', '⇣', 'ci test ' + s + ' — sync and run fast technical checks; completion is separate')
+    + ciBtn(r.repoPath, s, 'land', '⇪', c.state === 'ready' ? 'ci land ' + s + ' — land completed work' : c.reason, c.state !== 'ready')
     + st;
 }
 
@@ -1786,8 +1838,15 @@ class StatsViewProvider {
     } else if (!/^\d+$/.test(String(serial))) {
       return;
     } else if (cmd === 'test') {
-      args = ['test', String(serial), '--fix'];
+      args = ['test', String(serial)];
     } else if (cmd === 'preview' || cmd === 'land') {
+      if (cmd === 'land') {
+        const readiness = await currentCi(repoPath);
+        if (!readiness || readiness.serial !== Number(serial) || readiness.state !== 'ready') {
+          vscode.window.showWarningMessage('Cannot land: ' + (readiness && readiness.reason || 'completion is not verified'));
+          return;
+        }
+      }
       args = [cmd, String(serial)];
     } else {
       return;

@@ -8,14 +8,16 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8
 const repoPath = '/home/azrael/kylie-worktrees/pr-194';
 const ci = '/home/azrael/kylie/scripts/ci';
 
-function harness(summary) {
+function harness(summary, readiness = { state: 'ready', serial: 194 }) {
   const tasks = [];
   const terminals = [];
+  const warnings = [];
   const vscode = {
     workspace: { getConfiguration: () => ({ get: () => ci }) },
     window: {
       createOutputChannel: () => ({}),
       showInputBox: async () => summary,
+      showWarningMessage: (message) => warnings.push(message),
       createTerminal: (options) => {
         terminals.push(options);
         return { show() {}, sendText() {} };
@@ -34,15 +36,15 @@ function harness(summary) {
     },
     tasks: { executeTask: async (task) => { tasks.push(task); } },
   };
-  const Provider = vm.runInNewContext(source + '\nStatsViewProvider;', {
-    module: { exports: {} },
+  const Provider = vm.runInNewContext(source + '\ncurrentCi = async () => readiness; StatsViewProvider;', {
+    module: { exports: {} }, readiness,
     require: (name) => {
       if (name === 'vscode') return vscode;
       if (name === 'child_process') return {};
       return require(name);
     },
   });
-  return { provider: new Provider(), tasks, terminals, vscode };
+  return { provider: new Provider(), tasks, terminals, vscode, warnings };
 }
 
 test('preview starts as a process task outside shell auto-activation', async () => {
@@ -61,7 +63,7 @@ test('preview starts as a process task outside shell auto-activation', async () 
 });
 
 for (const [command, expected] of [
-  ['test', ['test', '194', '--fix']],
+  ['test', ['test', '194']],
   ['land', ['land', '194']],
   ['new', ['new', 'preview-startup-race', '--case', '6654']],
 ]) {
@@ -80,4 +82,19 @@ test('invalid PR serial launches nothing', async () => {
   await provider.runCi('preview', repoPath, '194; echo invalid');
   assert.equal(tasks.length, 0);
   assert.equal(terminals.length, 0);
+});
+
+for (const state of ['wip', 'blocked', 'verification-needed']) {
+  test(`land rechecks current ${state} status and launches no task`, async () => {
+    const { provider, tasks, warnings } = harness(undefined, { state, serial: 194, reason: 'Review incomplete' });
+    await provider.runCi('land', repoPath, '194');
+    assert.equal(tasks.length, 0);
+    assert.match(warnings[0], /Review incomplete/);
+  });
+}
+
+test('land refuses mismatched PR identity', async () => {
+  const { provider, tasks } = harness(undefined, { state: 'ready', serial: 195 });
+  await provider.runCi('land', repoPath, '194');
+  assert.equal(tasks.length, 0);
 });

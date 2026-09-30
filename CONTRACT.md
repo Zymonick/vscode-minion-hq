@@ -59,3 +59,21 @@ Tests embedded in application files are not separated from their file's score.
 
 Identified vendor libraries stay outside both totals. Scores compare the merge
 base with the same HEAD used by the branch diff; unscored files show no score.
+
+## PR readiness
+
+Task completion and technical check results are separate. A stored green test
+file never means ready. Show WIP, blocked, verification needed, or ready, with
+an independent smoke/configuration/CI/full-suite result. Landed and running CI
+states take precedence.
+
+Ready requires a single ready marker, clean worktree, valid current development
+proof, and CI's versioned completion seal matching HEAD, the tracked completion
+record hash, tested base and proof policies/fingerprint. Missing, malformed or
+stale evidence fails closed with a reason. Master movement requires integration
+verification. Legacy PRs have no inferred completion.
+
+Land controls are disabled unless ready and revalidate current state when
+clicked. CI remains authoritative at execution. The test button invokes the
+supported fast test command without retired repair flags. Use the existing
+refresh lifecycle; do not add polling or background jobs for readiness.

@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.12",
+  "version": "0.13.13",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -56,7 +56,7 @@
         "scmDiffStats.ciCommand": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Absolute path to the repository's `scripts/ci` tool (empty hides the CI controls). Enables per-PR icon buttons — ▷ `preview N`, ⇣ `test N --fix`, ⇪ `land N` — plus ✚ `new <three-word-slug>` on the master row and a land-readiness indicator (✓ ready · ↓ behind master · ○ not tested) from `.ci/pr-N.tested.json`. Commands run in interactive task terminals, isolated from shell auto-activation. PR worktrees with these controls hide the generic sync/preview buttons."
+          "markdownDescription": "Absolute path to the repository scripts/ci tool. Enables preview, fast check and land buttons. Task completion and technical check results are shown separately. Landing requires the current completion seal and rechecks it when clicked. Empty hides CI actions; readiness remains visible."
         },
         "scmDiffStats.syncTestCommand": {
           "type": "string",

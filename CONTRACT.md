@@ -9,6 +9,12 @@ repository additions or removals, regardless of Git's discovery order.
 Rediscovering the same repositories in a different order must not restart
 their active scan.
 
+## Expansion
+
+Opening a worktree row also opens its Vs master section, whatever state that
+section was left in. Collapse All and Expand All set every worktree, section,
+and commit at once; expanded commits load their files once.
+
 ## Line totals
 
 Worktree, Staged, Changes, Vs master, collapsed worktree, and commit line totals

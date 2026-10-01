@@ -1170,6 +1170,7 @@ let previewEnabled = false;
 let ciEnabled = false;
 let pendingRepos = null;
 const commitFiles = {};
+const pendingCommitFiles = new Set();
 const state = vscode.getState() || { collapsed: {} };
 state.collapsed = state.collapsed || {};
 state.drafts = state.drafts || {};
@@ -1197,6 +1198,29 @@ function prTag(pr) {
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }
+
+function loadCommitFiles(repoPath, hash) {
+  const key = repoPath + '|' + hash;
+  if (commitFiles[key] || pendingCommitFiles.has(key)) { return; }
+  pendingCommitFiles.add(key);
+  vscode.postMessage({ type: 'expandCommit', repoPath, hash });
+}
+
+function setExpansion(mode) {
+  const collapsed = mode === 'collapse';
+  for (const r of repos) {
+    state.collapsed['r|' + r.repoPath] = collapsed;
+    for (const kind of ['staged', 'changes', 'vsmaster', 'commits']) {
+      state.collapsed['s|' + r.repoPath + '|' + kind] = collapsed;
+    }
+    for (const c of r.commits) {
+      state.collapsed['c|' + r.repoPath + '|' + c.hash] = collapsed;
+      if (!collapsed) { loadCommitFiles(r.repoPath, c.hash); }
+    }
+  }
+  vscode.setState(state);
+  render();
+}
 
 function ciBtn(repoPath, serial, cmd, glyph, tip, blocked) {
   return '<button class="ibtn' + (blocked ? ' blocked' : '') + '" data-repo="' + esc(repoPath)
@@ -1468,8 +1492,12 @@ document.addEventListener('click', (ev) => {
     if (type === 'e') {
       const [, repoPath, hash] = id.split('|');
       if (isCollapsed(id, dflt) && !commitFiles[repoPath + '|' + hash]) {
-        vscode.postMessage({ type: 'expandCommit', repoPath, hash });
+        loadCommitFiles(repoPath, hash);
       }
+    }
+    // Opening a worktree always shows its branch diff, even if Vs master was closed before.
+    if (id.startsWith('r|') && isCollapsed(id, dflt)) {
+      state.collapsed['s|' + id.slice(2) + '|vsmaster'] = false;
     }
     toggle(id, dflt);
   } else if (type === 'w' || type === 's') {
@@ -1486,7 +1514,9 @@ document.addEventListener('click', (ev) => {
 
 window.addEventListener('message', (ev) => {
   const m = ev.data;
-  if (m.type === 'data') {
+  if (m.type === 'expansion') {
+    setExpansion(m.mode);
+  } else if (m.type === 'data') {
     loading = !!m.loading;
     syncEnabled = !!m.syncEnabled;
     previewEnabled = !!m.previewEnabled;
@@ -1500,7 +1530,12 @@ window.addEventListener('message', (ev) => {
       render();
     }
   }
-  else if (m.type === 'commitFiles') { commitFiles[m.repoPath + '|' + m.hash] = m.files; render(); }
+  else if (m.type === 'commitFiles') {
+    const key = m.repoPath + '|' + m.hash;
+    pendingCommitFiles.delete(key);
+    commitFiles[key] = m.files;
+    render();
+  }
   else if (m.type === 'committed') {
     delete state.drafts[m.repoPath];
     vscode.setState(state);
@@ -1649,6 +1684,12 @@ class StatsViewProvider {
     this.loading = true;
     this.channel = vscode.window.createOutputChannel('Minion HQ');
     logChannel = this.channel;
+  }
+
+  setExpansion(mode) {
+    if (this.view) {
+      this.view.webview.postMessage({ type: 'expansion', mode });
+    }
   }
 
   syncCommand() {
@@ -2079,6 +2120,8 @@ function activate(context) {
   const provider = new StatsViewProvider();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('scmDiffStats', provider));
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.refresh', () => provider.refresh()));
+  context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.collapseAll', () => provider.setExpansion('collapse')));
+  context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.expandAll', () => provider.setExpansion('expand')));
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(EMPTY_SCHEME, {
       provideTextDocumentContent: () => '',

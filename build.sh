@@ -36,6 +36,8 @@ with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED) as z:
     z.write('extension/package.json')
     z.write('extension/extension.js')
     z.write('extension/media/diff-stats.svg')
+    z.write('extension/media/minion-hq.svg')
+    z.write('extension/media/minion-hq.png')
 print(f'built {sys.argv[1]}')
 EOF
 
@@ -59,4 +61,5 @@ if [ -n "$CODE" ]; then
   echo "installed Minion HQ $VERSION — reload the VS Code window to pick it up"
 else
   echo "code CLI not found; install manually: code --install-extension $VSIX"
+  exit 1
 fi

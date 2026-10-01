@@ -2,7 +2,8 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.0",
+  "version": "0.13.14",
+  "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
     "vscode": "^1.75.0"
@@ -35,6 +36,16 @@
     },
     "commands": [
       {
+        "command": "scmDiffStats.collapseAll",
+        "title": "Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "scmDiffStats.expandAll",
+        "title": "Expand All",
+        "icon": "$(expand-all)"
+      },
+      {
         "command": "scmDiffStats.refresh",
         "title": "Refresh Minion HQ",
         "icon": "$(refresh)"
@@ -42,6 +53,16 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "scmDiffStats.collapseAll",
+          "when": "view == scmDiffStats",
+          "group": "navigation@1"
+        },
+        {
+          "command": "scmDiffStats.expandAll",
+          "when": "view == scmDiffStats",
+          "group": "navigation@2"
+        },
         {
           "command": "scmDiffStats.refresh",
           "when": "view == scmDiffStats",
@@ -55,7 +76,7 @@
         "scmDiffStats.ciCommand": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Absolute path to the repository's `scripts/ci` tool (empty hides the CI controls). Enables per-PR icon buttons — ▷ `preview N`, ⇣ `test N --fix`, ⇪ `land N` — plus ✚ `new <three-word-slug>` on the master row and a land-readiness indicator (✓ ready · ↓ behind master · ○ not tested) from `.ci/pr-N.tested.json`. Commands run in interactive task terminals, isolated from shell auto-activation. PR worktrees with these controls hide the generic sync/preview buttons."
+          "markdownDescription": "Absolute path to the repository scripts/ci tool. Enables preview, fast check and land buttons. Task completion and technical check results are shown separately. Landing requires the current completion seal and rechecks it when clicked. Empty hides CI actions; readiness remains visible."
         },
         "scmDiffStats.syncTestCommand": {
           "type": "string",
@@ -78,10 +99,25 @@
           "default": [],
           "markdownDescription": "Worktree paths that get no row. Each pattern is matched against the worktree's absolute path and against its folder name; `*` matches inside one path segment, `**` across segments, and a pattern without a wildcard also excludes everything under it. Use it to hide checkouts that are nobody's work — an agent tool's scratch clones (`**/.codex/worktrees/**`), a CI verify worktree."
         },
+        "scmDiffStats.vendorLibraries": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "items": {
+            "type": "object",
+            "required": ["name", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "path": { "type": "string", "minLength": 1, "description": "Exact repository-relative vendor directory, without a trailing slash or wildcards." }
+            }
+          },
+          "markdownDescription": "Additional vendored libraries, for example `[{\"name\":\"Example\",\"path\":\"assets/example\"}]`. These directories are excluded from **cx** and line totals and reported separately with their uncompressed tracked size. Libraries with package metadata or a pinned npm archive in README.md are also recognized under `vendor/`, `third_party/`, `third-party/`, and `staticfiles/`. Application code outside identified library directories stays counted."
+        },
         "scmDiffStats.qltyCommand": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: the cognitive-complexity change of every file vs master and the branch total, from `qlty metrics` at the merge base and at HEAD. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
+          "markdownDescription": "Path to the `qlty` CLI (https://qlty.sh) behind the **cx** column: cognitive-complexity changes vs master, from `qlty metrics` at the merge base and at HEAD. The branch total counts application code; CI and test infrastructure is excluded and shown separately in its tooltip and in grey on individual files. Identified vendored libraries are excluded and reported separately. Empty uses `~/.qlty/bin/qlty`, then `qlty` on PATH; the column stays away when no binary is found. Scoring runs in a scratch git repository under the OS temp dir, never inside the project."
         }
       }
     }

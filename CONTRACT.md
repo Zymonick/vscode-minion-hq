@@ -68,10 +68,11 @@ base with the same HEAD used by the branch diff; unscored files show no score.
 
 ## PR readiness
 
-Task completion and technical check results are separate. A stored green test
-file never means ready. Show WIP, blocked, verification needed, or ready, with
-an independent smoke/configuration/CI/full-suite result. Landed and running CI
-states take precedence.
+Show one task status marker per PR: WIP, blocked, verification needed, ready,
+testing, or landed. Put the readiness reason and technical check result in that
+marker's tooltip; do not render a separate check-result indicator. A stored
+green test file never means ready. Landed and running CI states take precedence
+and use their own tooltip, without superseded readiness or check details.
 
 Ready requires a single ready marker, clean worktree, valid current development
 proof, and CI's versioned completion seal matching HEAD, the tracked completion

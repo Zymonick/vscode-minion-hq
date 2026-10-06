@@ -1082,11 +1082,6 @@ function getHtml(nonce) {
   .prst-ready { color: var(--vscode-charts-green, #89d185); }
   .prst-open { color: var(--vscode-descriptionForeground); }
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
-  .cist { margin-left: 6px; flex: none; font-weight: 700; cursor: default; }
-  .ci-checks { color: var(--vscode-descriptionForeground, #aaa); }
-  .ci-ready { color: var(--vscode-charts-green, #89d185); }
-  .ci-behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
-  .ci-untested { color: var(--vscode-charts-yellow, #d7ba7d); }
 </style>
 </head>
 <body>
@@ -1118,10 +1113,13 @@ const PR_STATUS_TIP = {
 
 // Task state accompanies its existing case number and summary.
 // The status sits outside the dimmed label so its colour reads at full strength.
-function prTag(pr) {
+function prTag(pr, ci) {
   if (!pr || !pr.status) return '';
+  const reason = pr.status === 'landed' || pr.status === 'testing'
+    ? PR_STATUS_TIP[pr.status]
+    : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel].filter(Boolean).join('\\n');
   return '<span class="prst prst-' + esc(pr.status) + '" title="'
-    + esc(pr.reason || PR_STATUS_TIP[pr.status] || pr.status) + '">[' + esc(pr.status.replace(/-/g, ' ')) + ']</span>';
+    + esc(reason) + '">[' + esc(pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }
@@ -1147,12 +1145,6 @@ function setExpansion(mode) {
   }
   vscode.setState(state);
   render();
-}
-
-function ciHtml(r) {
-  if (!r.ci) return '';
-  return '<span class="cist ci-checks" title="' + esc(r.ci.reason) + '">'
-    + esc(r.ci.checkLabel || 'Checks unknown') + '</span>';
 }
 
 function cols(add, del, letter, binary) {
@@ -1262,7 +1254,6 @@ function render() {
       agentHtml = '<span class="agent" title="agent session(s) working in this worktree: '
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
-    const ci = ciHtml(r);
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1273,8 +1264,8 @@ function render() {
       repoCols = dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
-    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr), dim: repoDim,
-      btns: ci + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
+    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
+      btns: agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
     const sections = [

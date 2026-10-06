@@ -62,7 +62,7 @@ test('a green test record alone never means ready', async (t) => {
   assert.equal(result.checkLabel, 'Smoke passed');
 });
 
-test('a sealed current completion is ready and smoke remains a separate label', async (t) => {
+test('a sealed current completion is ready and retains technical check details', async (t) => {
   const f = fixture(t);
   const result = await f.collect();
   assert.equal(result.state, 'ready');
@@ -117,7 +117,7 @@ test('unknown HEAD cannot become ready even with fabricated empty evidence', asy
 });
 
 
-test('rendered rows keep task state separate without steering controls', (t) => {
+test('rendered rows show one task marker and keep check details in its tooltip', (t) => {
   const f = fixture(t);
   const root = { innerHTML: '' };
   let receive;
@@ -127,15 +127,37 @@ test('rendered rows keep task state separate without steering controls', (t) => 
     document: { getElementById: () => root, addEventListener() {} },
     window: { addEventListener: (_, handler) => { receive = handler; } },
   });
-  for (const state of ['ready', 'wip', 'blocked', 'verification-needed']) {
+  const cases = [
+    ['ready', 'Smoke passed'], ['ready', 'Configuration passed'],
+    ['ready', 'CI checks passed'], ['ready', 'Full suite passed'],
+    ['wip', 'Smoke passed'], ['blocked', 'Smoke passed'],
+    ['verification-needed', 'Checks stale'], ['verification-needed', 'Checks missing'],
+    ['verification-needed', 'Smoke passed'],
+    ['testing', 'Checks running'], ['landed', 'Checks stale'],
+  ];
+  for (const [state, checkLabel] of cases) {
     receive({ data: { type: 'data', ciEnabled: true, repos: [{
       repoPath: f.repo, name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
       staged: [], unstaged: [], untracked: [], commits: [],
       pr: { serial: 7, status: state, label: 'Requested change', reason: 'Review state' },
-      ci: { serial: 7, state, reason: 'Review state', checkLabel: 'Smoke passed' },
+      ci: { serial: 7, state, reason: 'Review state', checkLabel },
     }] } });
     assert.ok(root.innerHTML.includes('[' + state.replaceAll('-', ' ') + ']'));
-    assert.match(root.innerHTML, /Smoke passed/);
+    const visible = root.innerHTML.replace(/<[^>]*>/g, '');
+    assert.ok(!visible.includes(checkLabel), 'check details must not form a second visible status');
+    const markers = [...root.innerHTML.matchAll(/<span class="prst [^"]+" title="([^"]*)">/g)];
+    assert.equal(markers.length, 1);
+    const tooltip = markers[0][1];
+    if (state === 'landed') {
+      assert.match(tooltip, /master carries the squash commit/);
+      assert.doesNotMatch(tooltip, /Review state|Checks stale/);
+    } else if (state === 'testing') {
+      assert.match(tooltip, /live ci test/);
+      assert.doesNotMatch(tooltip, /Review state/);
+    } else {
+      assert.match(tooltip, /Review state/);
+      assert.ok(tooltip.includes(checkLabel));
+    }
     assert.doesNotMatch(root.innerHTML, /<button\b|<input\b/);
   }
 });

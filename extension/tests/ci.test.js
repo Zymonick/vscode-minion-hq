@@ -5,96 +5,64 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-const repoPath = '/home/azrael/kylie-worktrees/pr-194';
-const ci = '/home/azrael/kylie/scripts/ci';
 
-function harness(summary, readiness = { state: 'ready', serial: 194 }) {
-  const tasks = [];
-  const terminals = [];
-  const warnings = [];
+function harness() {
+  const calls = [];
+  const record = (...args) => calls.push(args);
   const vscode = {
-    workspace: { getConfiguration: () => ({ get: () => ci }) },
+    workspace: { getConfiguration: () => ({ get: () => '/configured/command' }) },
     window: {
       createOutputChannel: () => ({}),
-      showInputBox: async () => summary,
-      showWarningMessage: (message) => warnings.push(message),
-      createTerminal: (options) => {
-        terminals.push(options);
-        return { show() {}, sendText() {} };
-      },
+      showInputBox: record,
+      createTerminal: record,
     },
-    TaskScope: { Workspace: 2 },
-    TaskRevealKind: { Always: 1 },
-    TaskPanelKind: { Dedicated: 2 },
-    ProcessExecution: class {
-      constructor(process, args, options) { Object.assign(this, { process, args, options }); }
-    },
-    Task: class {
-      constructor(definition, scope, name, source, execution, problemMatchers) {
-        Object.assign(this, { definition, scope, name, source, execution, problemMatchers });
-      }
-    },
-    tasks: { executeTask: async (task) => { tasks.push(task); } },
+    tasks: { executeTask: record },
   };
-  const Provider = vm.runInNewContext(source + '\ncurrentCi = async () => readiness; StatsViewProvider;', {
-    module: { exports: {} }, readiness,
+  const { StatsViewProvider, getHtml } = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml });', {
+    module: { exports: {} },
     require: (name) => {
       if (name === 'vscode') return vscode;
-      if (name === 'child_process') return {};
+      if (name === 'child_process') return { execFile: record, spawn: record };
       return require(name);
     },
   });
-  return { provider: new Provider(), tasks, terminals, vscode, warnings };
+  return { provider: new StatsViewProvider(), getHtml, calls };
 }
 
-test('preview starts as a process task outside shell auto-activation', async () => {
-  const { provider, tasks, terminals, vscode } = harness();
-  await provider.runCi('preview', repoPath, '194');
-
-  assert.equal(tasks.length, 1, 'preview must use a task terminal to avoid Python activation');
-  assert.equal(terminals.length, 0, 'do not send preview text into a newly activating shell');
-  const task = tasks[0];
-  assert.ok(task.execution instanceof vscode.ProcessExecution);
-  assert.equal(task.execution.process, ci);
-  assert.deepEqual(Array.from(task.execution.args), ['preview', '194']);
-  assert.equal(task.execution.options.cwd, repoPath);
-  assert.equal(task.presentationOptions.reveal, vscode.TaskRevealKind.Always);
-  assert.equal(task.presentationOptions.focus, true);
+test('legacy steering messages cannot launch commands, terminals, or Git writes', async () => {
+  const { provider, calls } = harness();
+  const target = { repoPath: '/repos/pr-7', serial: '7' };
+  for (const cmd of ['new', 'preview', 'test', 'land']) {
+    await provider.onMessage({ type: 'ci', cmd, ...target });
+  }
+  for (const type of ['synctest', 'preview', 'commit']) {
+    await provider.onMessage({ type, message: 'Old draft', push: true, ...target });
+  }
+  assert.deepEqual(calls, []);
 });
 
-for (const [command, expected] of [
-  ['test', ['test', '194']],
-  ['land', ['land', '194']],
-  ['new', ['new', 'preview-startup-race', '--case', '6654']],
-]) {
-  test(`${command} preserves its arguments and worktree in the task`, async () => {
-    const { provider, tasks } = harness('#6654 preview startup race');
-    await provider.runCi(command, repoPath, '194');
-
-    assert.equal(tasks.length, 1);
-    assert.deepEqual(Array.from(tasks[0].execution.args), expected);
-    assert.equal(tasks[0].execution.options.cwd, repoPath);
+test('master, PR, and generic worktrees show status and files without steering controls', () => {
+  const { getHtml } = harness();
+  const root = { innerHTML: '' };
+  let receive;
+  vm.runInNewContext(getHtml('test').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1], {
+    acquireVsCodeApi: () => ({ getState: () => ({}), postMessage() {} }),
+    document: { getElementById: () => root, addEventListener() {} },
+    window: { addEventListener: (_, handler) => { receive = handler; } },
   });
-}
-
-test('invalid PR serial launches nothing', async () => {
-  const { provider, tasks, terminals } = harness();
-  await provider.runCi('preview', repoPath, '194; echo invalid');
-  assert.equal(tasks.length, 0);
-  assert.equal(terminals.length, 0);
-});
-
-for (const state of ['wip', 'blocked', 'verification-needed']) {
-  test(`land rechecks current ${state} status and launches no task`, async () => {
-    const { provider, tasks, warnings } = harness(undefined, { state, serial: 194, reason: 'Review incomplete' });
-    await provider.runCi('land', repoPath, '194');
-    assert.equal(tasks.length, 0);
-    assert.match(warnings[0], /Review incomplete/);
-  });
-}
-
-test('land refuses mismatched PR identity', async () => {
-  const { provider, tasks } = harness(undefined, { state: 'ready', serial: 195 });
-  await provider.runCi('land', repoPath, '194');
-  assert.equal(tasks.length, 0);
+  const file = { path: 'app.js', letter: 'M', add: 1, del: 0 };
+  const repos = ['master', 'pr-7', 'feature'].map((branch) => ({
+    branch, repoPath: '/repos/' + branch, name: branch, upstream: true,
+    totals: { add: 1, del: 0 }, staged: [file], unstaged: [file], untracked: [], commits: [],
+    vsMaster: branch === 'master' ? null : { files: [file], totals: { add: 1, del: 0 } },
+  }));
+  repos[1].pr = { status: 'ready', label: 'Requested change', reason: 'Verified' };
+  repos[1].ci = { state: 'ready', reason: 'Verified', checkLabel: 'Smoke passed' };
+  receive({ data: { type: 'data', repos, ciEnabled: true, syncEnabled: true, previewEnabled: true } });
+  assert.doesNotMatch(root.innerHTML, /<button\b|<input\b/);
+  assert.match(root.innerHTML, /\[ready\]/);
+  assert.match(root.innerHTML, /Smoke passed/);
+  assert.match(root.innerHTML, /data-act="s\|\/repos\/pr-7\|app.js"/);
+  assert.match(root.innerHTML, /data-act="w\|\/repos\/feature\|app.js"/);
+  assert.match(root.innerHTML, /Vs master/);
 });

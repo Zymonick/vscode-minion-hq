@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.14",
+  "version": "0.13.15",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -73,26 +73,6 @@
     "configuration": {
       "title": "Minion HQ",
       "properties": {
-        "scmDiffStats.ciCommand": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Absolute path to the repository scripts/ci tool. Enables preview, fast check and land buttons. Task completion and technical check results are shown separately. Landing requires the current completion seal and rechecks it when clicked. Empty hides CI actions; readiness remains visible."
-        },
-        "scmDiffStats.syncTestCommand": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Shell command for the per-repo **⇣ sync + test** button (empty hides the button). Placeholders: `${name}` (worktree folder name), `${branch}`, `${repoPath}`. Runs via `bash -lc` in the repo. Non-zero exit launches a Claude fix agent in a terminal at the worktree."
-        },
-        "scmDiffStats.previewCommand": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Shell command for the per-repo **▷ preview** button (empty hides the button). Must print the preview base URL (`http://…`) on stdout. Placeholders: `${name}` (worktree folder name), `${number}` (numeric PR serial from a `pr-N` worktree), `${repoPath}`. After it succeeds, the page URLs the command printed under that base (max 5) are opened in the browser; when it printed only the base URL, the worktree's `docs/PR_${number}/urls_changed.md` paths are used instead."
-        },
-        "scmDiffStats.browserCommand": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Shell command used to open the preview pages. `${urls}` is replaced with the quoted URLs. Empty falls back to the OS default browser (one call per URL, no window grouping)."
-        },
         "scmDiffStats.excludePaths": {
           "type": "array",
           "items": { "type": "string" },

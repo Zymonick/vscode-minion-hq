@@ -5,7 +5,6 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const CI_TASK_TYPE = 'scm-diff-stats-ci';
 const REPO_CONCURRENCY = 2;
 const MAX_UNTRACKED_BYTES = 5 * 1024 * 1024;
 
@@ -320,45 +319,8 @@ async function collectRepo(repoPath, testing) {
   };
 }
 
-function ciCommandPath() {
-  return (vscode.workspace.getConfiguration('scmDiffStats').get('ciCommand') || '').trim();
-}
-
-// Fallback page list for the preview button when the preview command printed
-// only the base URL: the PR's own docs/PR_N/urls_changed.md, read the way
-// scripts/ci reads it — one root-relative path per line, '#' and blanks out.
-function changedPagePaths(repoPath, number) {
-  if (!number) return [];
-  const file = path.join(repoPath, 'docs', 'PR_' + number, 'urls_changed.md');
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return [];
-  }
-  const paths = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line && !line.startsWith('#') && /^\/\S*$/.test(line) && !paths.includes(line)) {
-      paths.push(line);
-    }
-  }
-  return paths;
-}
-
 const SUMMARY_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){2}$/;
 const CASE_NUMBER_RE = /^[1-9][0-9]{0,6}$/;
-
-// `ci new` input: three lowercase words, optionally behind the Kylie case
-// number the PR works on — "#6654 three word summary" or "6654 three word …".
-// A slug whose own first token is numeric ("2fa token reset") still parses as
-// a slug: the case number only splits off when a space follows it.
-function parseNewSummary(value) {
-  const m = /^\s*(?:#?([1-9][0-9]{0,6})\s+)?(\S.*?)\s*$/.exec(value || '');
-  if (!m) return null;
-  const slug = m[2].replace(/\s+/g, '-');
-  return SUMMARY_SLUG_RE.test(slug) ? { caseNumber: m[1] || '', slug } : null;
-}
 
 // ── Excluded worktrees ──────────────────────────────────────────────────────
 // A repository's worktree list also carries checkouts that are nobody's work:
@@ -412,7 +374,7 @@ function excludePatterns() {
 // scripts/rename-session titles every agent session "pr-N [status]: <label>",
 // composed from scripts/ci state alone. The panel reads the same state, so a
 // PR row says exactly what the sessions working in it say. This is deliberately
-// independent of `ciCommand`: the label and the status are files on disk, and a
+// The label and status are files on disk, and a
 // row should carry them whether or not the ci tool itself is wired up.
 
 function ciStateDir(repoPath) {
@@ -570,18 +532,6 @@ async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
     }
   }
   return { serial, state, reason, checkLabel, suite: tested && tested.suite, time: tested && tested.time };
-}
-
-async function currentCi(repoPath) {
-  const [branch, master, status] = await Promise.all([
-    gitFull(repoPath, ['symbolic-ref', '--short', 'HEAD']),
-    gitFull(repoPath, ['rev-parse', 'master']),
-    gitFull(repoPath, ['status', '--porcelain']),
-  ]);
-  if (branch.code || master.code || status.code) {
-    return { state: 'verification-needed', reason: 'Cannot read current repository state' };
-  }
-  return collectCi(repoPath, branch.out.trim(), null, status.out.trim() ? 1 : 0, master.out.trim());
 }
 
 // ── Vendored dependencies vs master ─────────────────────────────────────────
@@ -1122,27 +1072,9 @@ function getHtml(nonce) {
   .st-R, .st-C { color: var(--vscode-gitDecoration-renamedResourceForeground); }
   .behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .empty { padding: 8px; opacity: .6; }
-  .cbox { display: flex; gap: 4px; padding: 3px 8px 5px 18px; }
-  .cmsg { flex: 1; min-width: 0; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-          border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px; padding: 2px 6px;
-          font-family: inherit; font-size: inherit; outline: none; }
-  .cmsg:focus { border-color: var(--vscode-focusBorder); }
-  .cmsg::placeholder { color: var(--vscode-input-placeholderForeground); }
-  .cbtn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none;
-          border-radius: 2px; padding: 2px 8px; cursor: pointer; font-family: inherit; font-size: inherit; white-space: nowrap; }
-  .cbtn:hover { background: var(--vscode-button-hoverBackground); }
-  .sbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-          border: none; border-radius: 2px; padding: 0 6px; margin-left: 8px; cursor: pointer;
-          font-family: inherit; font-size: .85em; height: 18px; white-space: nowrap; flex: none; }
-  .sbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
   .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em; flex: none;
            animation: agentpulse 2s ease-in-out infinite; }
   @keyframes agentpulse { 50% { opacity: .4; } }
-  .ibtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-          border: none; border-radius: 2px; width: 20px; padding: 0; margin-left: 4px; cursor: pointer;
-          font-family: inherit; font-size: .9em; height: 18px; line-height: 18px; flex: none; text-align: center; }
-  .ibtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
-  .ibtn.blocked { opacity: .45; }
   .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
@@ -1165,15 +1097,10 @@ window.addEventListener('error', (e) => vscode.postMessage({ type: 'error', mess
 let repos = [];
 let loading = true;
 let agents = {};
-let syncEnabled = false;
-let previewEnabled = false;
-let ciEnabled = false;
-let pendingRepos = null;
 const commitFiles = {};
 const pendingCommitFiles = new Set();
 const state = vscode.getState() || { collapsed: {} };
 state.collapsed = state.collapsed || {};
-state.drafts = state.drafts || {};
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -1222,24 +1149,10 @@ function setExpansion(mode) {
   render();
 }
 
-function ciBtn(repoPath, serial, cmd, glyph, tip, blocked) {
-  return '<button class="ibtn' + (blocked ? ' blocked' : '') + '" data-repo="' + esc(repoPath)
-    + '" data-serial="' + serial + '" data-cmd="' + cmd + '" title="' + esc(tip)
-    + '"' + (blocked ? ' disabled aria-disabled="true"' : '') + '>' + glyph + '</button>';
-}
-
 function ciHtml(r) {
-  if (ciEnabled && r.branch === 'master') {
-    return ciBtn(r.repoPath, '', 'new', '✚', 'ci new — create a new PR: worktree, branch, docs/PR_N, database');
-  }
   if (!r.ci) return '';
-  const c = r.ci, s = c.serial;
-  const st = '<span class="cist ci-checks" title="' + esc(c.reason) + '">' + esc(c.checkLabel || 'Checks unknown') + '</span>';
-  if (!ciEnabled) return st;
-  return ciBtn(r.repoPath, s, 'preview', '▷', 'ci preview ' + s + ' — open the preview')
-    + ciBtn(r.repoPath, s, 'test', '⇣', 'ci test ' + s + ' — sync and run fast technical checks; completion is separate')
-    + ciBtn(r.repoPath, s, 'land', '⇪', c.state === 'ready' ? 'ci land ' + s + ' — land completed work' : c.reason, c.state !== 'ready')
-    + st;
+  return '<span class="cist ci-checks" title="' + esc(r.ci.reason) + '">'
+    + esc(r.ci.checkLabel || 'Checks unknown') + '</span>';
 }
 
 function cols(add, del, letter, binary) {
@@ -1350,9 +1263,6 @@ function render() {
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
     const ci = ciHtml(r);
-    const previewBtn = (!ci && previewEnabled && r.branch !== 'master')
-      ? '<button class="sbtn pbtn" data-repo="' + esc(r.repoPath) + '" title="start the worktree preview server and open its changed pages (max 5) in the browser">▷ preview</button>'
-      : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1364,19 +1274,8 @@ function render() {
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr), dim: repoDim,
-      btns: ci + previewBtn + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
+      btns: ci + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
-
-    if (r.staged.length + r.unstaged.length + r.untracked.length > 0) {
-      const draft = state.drafts[r.repoPath] || '';
-      h += '<div class="cbox">'
-        + '<input class="cmsg" data-repo="' + esc(r.repoPath) + '" placeholder="Commit message" value="' + esc(draft) + '">'
-        + '<button class="cbtn" data-repo="' + esc(r.repoPath) + '" data-push="0" title="git add -A && git commit">Commit all</button>'
-        + (r.upstream
-          ? '<button class="cbtn" data-repo="' + esc(r.repoPath) + '" data-push="1" title="commit, then push to the PR branch">+ Push</button>'
-          : '')
-        + '</div>';
-    }
 
     const sections = [
       ['staged', 'Staged', r.staged, false],
@@ -1402,7 +1301,6 @@ function render() {
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
         cols: dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
-        btns: (syncEnabled && !r.ci) ? '<button class="sbtn" data-repo="' + esc(r.repoPath) + '" title="merge master in, run the full test suite, launch a fix agent on failure">⇣ sync + test</button>' : '',
         act: 't|' + vid + '|0' });
       if (!vc) for (const f of v.files) {
         h += fileRow(2, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
@@ -1434,51 +1332,7 @@ function render() {
   root.innerHTML = h;
 }
 
-function doCommit(repoPath, push) {
-  const msg = (state.drafts[repoPath] || '').trim();
-  if (!msg) return;
-  vscode.postMessage({ type: 'commit', repoPath, message: msg, push });
-}
-
-document.addEventListener('input', (ev) => {
-  if (ev.target.classList && ev.target.classList.contains('cmsg')) {
-    state.drafts[ev.target.dataset.repo] = ev.target.value;
-    vscode.setState(state);
-  }
-});
-
-document.addEventListener('keydown', (ev) => {
-  if (ev.target.classList && ev.target.classList.contains('cmsg') && ev.key === 'Enter') {
-    doCommit(ev.target.dataset.repo, ev.ctrlKey || ev.metaKey);
-  }
-});
-
-// pointerdown fires before the input's focusout, so a deferred render can't swallow the click
-document.addEventListener('pointerdown', (ev) => {
-  const btn = ev.target.closest && ev.target.closest('button.cbtn');
-  if (btn) { ev.preventDefault(); doCommit(btn.dataset.repo, btn.dataset.push === '1'); return; }
-  const ibtn = ev.target.closest && ev.target.closest('button.ibtn');
-  if (ibtn) {
-    ev.preventDefault();
-    vscode.postMessage({ type: 'ci', cmd: ibtn.dataset.cmd, repoPath: ibtn.dataset.repo, serial: ibtn.dataset.serial });
-    return;
-  }
-  const pbtn = ev.target.closest && ev.target.closest('button.pbtn');
-  if (pbtn) { ev.preventDefault(); vscode.postMessage({ type: 'preview', repoPath: pbtn.dataset.repo }); return; }
-  const sbtn = ev.target.closest && ev.target.closest('button.sbtn');
-  if (sbtn) { ev.preventDefault(); vscode.postMessage({ type: 'synctest', repoPath: sbtn.dataset.repo }); }
-});
-
-document.addEventListener('focusout', (ev) => {
-  if (pendingRepos && ev.target.classList && ev.target.classList.contains('cmsg')) {
-    repos = pendingRepos;
-    pendingRepos = null;
-    setTimeout(render, 100);
-  }
-});
-
 document.addEventListener('click', (ev) => {
-  if (ev.target.closest('button')) return;
   const el = ev.target.closest('.row');
   if (!el || !el.dataset.act) return;
   const act = el.dataset.act;
@@ -1518,27 +1372,14 @@ window.addEventListener('message', (ev) => {
     setExpansion(m.mode);
   } else if (m.type === 'data') {
     loading = !!m.loading;
-    syncEnabled = !!m.syncEnabled;
-    previewEnabled = !!m.previewEnabled;
-    ciEnabled = !!m.ciEnabled;
     agents = m.agents || {};
-    // don't re-render while a commit message is being typed
-    if (document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('cmsg')) {
-      pendingRepos = m.repos;
-    } else {
-      repos = m.repos;
-      render();
-    }
+    repos = m.repos;
+    render();
   }
   else if (m.type === 'commitFiles') {
     const key = m.repoPath + '|' + m.hash;
     pendingCommitFiles.delete(key);
     commitFiles[key] = m.files;
-    render();
-  }
-  else if (m.type === 'committed') {
-    delete state.drafts[m.repoPath];
-    vscode.setState(state);
     render();
   }
 });
@@ -1647,20 +1488,6 @@ function scanAgents(repoPaths) {
   return map;
 }
 
-function findClaudeBin() {
-  try {
-    const extDir = path.join(process.env.HOME || '', '.vscode-server', 'extensions');
-    const candidates = fs.readdirSync(extDir)
-      .filter((d) => d.startsWith('anthropic.claude-code-'))
-      .sort()
-      .reverse()
-      .map((d) => path.join(extDir, d, 'resources', 'native-binary', 'claude'))
-      .filter((p) => fs.existsSync(p));
-    if (candidates.length) return candidates[0];
-  } catch { /* fall through */ }
-  return 'claude';
-}
-
 function compareRepoPaths(a, b) {
   const aName = path.basename(a);
   const bName = path.basename(b);
@@ -1677,7 +1504,6 @@ class StatsViewProvider {
     this.reposKnown = false;
     this.data = new Map();
     this.fileStats = new Map();
-    this.running = new Set();
     this.agents = {};
     this.refreshPromise = null;
     this.refreshPending = false;
@@ -1689,228 +1515,6 @@ class StatsViewProvider {
   setExpansion(mode) {
     if (this.view) {
       this.view.webview.postMessage({ type: 'expansion', mode });
-    }
-  }
-
-  syncCommand() {
-    return (vscode.workspace.getConfiguration('scmDiffStats').get('syncTestCommand') || '').trim();
-  }
-
-  previewCommand() {
-    return (vscode.workspace.getConfiguration('scmDiffStats').get('previewCommand') || '').trim();
-  }
-
-  browserCommand() {
-    return (vscode.workspace.getConfiguration('scmDiffStats').get('browserCommand') || '').trim();
-  }
-
-  async runPreview(repoPath) {
-    const name = path.basename(repoPath);
-    const key = 'preview:' + repoPath;
-    if (this.running.has(key)) {
-      vscode.window.showWarningMessage(`${name}: preview is already starting`);
-      return;
-    }
-    const template = this.previewCommand();
-    if (!template) {
-      vscode.window.showErrorMessage('Set scmDiffStats.previewCommand in your settings first.');
-      return;
-    }
-    const number = (name.match(/^pr-(\d+)$/) || [])[1];
-    if (template.includes('${number}') && !number) {
-      vscode.window.showErrorMessage(`${name}: preview command requires a pr-N worktree.`);
-      return;
-    }
-    const cmd = template
-      .replace(/\$\{number\}/g, number || '')
-      .replace(/\$\{name\}/g, name)
-      .replace(/\$\{repoPath\}/g, repoPath);
-    this.running.add(key);
-    this.channel.appendLine(`\n=== ${new Date().toLocaleTimeString()} · ${name}: ${cmd}`);
-    let out = '';
-    const append = (buf) => {
-      const s = buf.toString();
-      this.channel.append(s);
-      out += s;
-    };
-    try {
-      const code = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Window, title: `preview: ${name}` },
-        () => new Promise((resolve) => {
-          const child = cp.spawn('bash', ['-lc', cmd], { cwd: repoPath });
-          child.stdout.on('data', append);
-          child.stderr.on('data', append);
-          child.on('close', resolve);
-          child.on('error', (e) => { append(String(e)); resolve(1); });
-        })
-      );
-      if (code !== 0) {
-        this.channel.show(true);
-        vscode.window.showErrorMessage(`${name}: preview command failed — see the Minion HQ output.`);
-        return;
-      }
-      // base URL: prefer this worktree's status line, else the last URL printed
-      let base = null;
-      const line = out.match(new RegExp('^\\s*' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+\\S+\\s+(https?://\\S+)', 'm'));
-      if (line) base = line[1];
-      if (!base) {
-        const urls = out.match(/https?:\/\/[\d.]+:\d+/g);
-        base = urls ? urls[urls.length - 1] : null;
-      }
-      if (!base) {
-        this.channel.show(true);
-        vscode.window.showErrorMessage(`${name}: could not find the preview URL in the command output.`);
-        return;
-      }
-      base = base.replace(/\/+$/, '');
-
-      // The pages to open are the ones the preview command itself printed
-      // (`ci preview N status` lists every registered page under the base URL).
-      // Reading a checked-in manifest instead is what made preview open a long
-      // landed PR's pages against the current preview port.
-      const printed = new Set();
-      for (const raw of out.match(/https?:\/\/[^\s"'<>)\]]+/g) || []) {
-        const url = raw.replace(/[.,;]+$/, '');
-        if (url.startsWith(base + '/') && url !== base + '/') printed.add(url);
-      }
-      let pages = [...printed];
-      if (!pages.length) pages = changedPagePaths(repoPath, number).map((u) => base + u);
-      const urls = (pages.length ? pages.slice(0, 5) : [base]);
-
-      const bcmd = this.browserCommand();
-      if (bcmd) {
-        const full = bcmd.replace(/\$\{urls\}/g, urls.map((u) => '"' + u + '"').join(' '));
-        this.channel.appendLine(`launching browser: ${full}`);
-        const child = cp.spawn('bash', ['-lc', full], { detached: true, stdio: 'ignore' });
-        child.unref();
-      } else {
-        for (const u of urls) vscode.env.openExternal(vscode.Uri.parse(u));
-      }
-      vscode.window.setStatusBarMessage(`$(globe) ${name}: opened ${urls.length} page(s) at ${base}`, 8000);
-    } finally {
-      this.running.delete(key);
-    }
-  }
-
-  async runSyncTest(repoPath) {
-    const name = path.basename(repoPath);
-    const d = this.data.get(repoPath);
-    const branch = d ? d.branch : '';
-    if (this.running.has(repoPath)) {
-      vscode.window.showWarningMessage(`${name}: sync + test is already running`);
-      return;
-    }
-    const template = this.syncCommand();
-    if (!template) {
-      vscode.window.showErrorMessage('Set scmDiffStats.syncTestCommand in your settings first.');
-      return;
-    }
-    const dirty = (await git(repoPath, ['status', '--porcelain'])).trim();
-    if (dirty) {
-      vscode.window.showWarningMessage(`${name}: commit or stash the working tree changes first.`);
-      return;
-    }
-    const cmd = template
-      .replace(/\$\{name\}/g, name)
-      .replace(/\$\{branch\}/g, branch)
-      .replace(/\$\{repoPath\}/g, repoPath);
-
-    this.running.add(repoPath);
-    this.channel.appendLine(`\n=== ${new Date().toLocaleTimeString()} · ${name}: ${cmd}`);
-    let tail = '';
-    const append = (buf) => {
-      const s = buf.toString();
-      this.channel.append(s);
-      tail = (tail + s).slice(-4000);
-    };
-    try {
-      const code = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Window, title: `sync + test: ${name}` },
-        () => new Promise((resolve) => {
-          const child = cp.spawn('bash', ['-lc', cmd], { cwd: repoPath });
-          child.stdout.on('data', append);
-          child.stderr.on('data', append);
-          child.on('close', resolve);
-          child.on('error', (e) => { append(String(e)); resolve(1); });
-        })
-      );
-      if (code === 0) {
-        vscode.window.setStatusBarMessage(`$(check) ${name}: synced with master, tests green`, 8000);
-      } else {
-        this.channel.show(true);
-        this.launchFixAgent(repoPath, name, branch, tail);
-      }
-    } finally {
-      this.running.delete(repoPath);
-      this.refresh();
-    }
-  }
-
-  launchFixAgent(repoPath, name, branch, tail) {
-    const prompt =
-      `The command "sync + test" for worktree ${name} (branch ${branch}, path ${repoPath}) failed. ` +
-      `It runs the repository's test-integration flow: merge local master into the branch, then run the full test suite. ` +
-      `Diagnose and fix the problem (merge conflicts and/or test failures) so the flow passes, following the repository rules. ` +
-      `The output ended with:\n\n${tail}`;
-    const promptFile = path.join(require('os').tmpdir(), `scm-diff-stats-fix-${Date.now()}.txt`);
-    fs.writeFileSync(promptFile, prompt);
-    const term = vscode.window.createTerminal({ name: `fix ${name}`, cwd: repoPath });
-    term.show();
-    term.sendText(`${findClaudeBin()} "$(cat '${promptFile}')"`);
-    vscode.window.showWarningMessage(`${name}: sync + test failed — launched a fix agent in the terminal.`);
-  }
-
-  async runCi(cmd, repoPath, serial) {
-    const ci = ciCommandPath();
-    if (!ci) return;
-    let args;
-    if (cmd === 'new') {
-      const summary = await vscode.window.showInputBox({
-        prompt: 'Three-word PR summary, after the case number if this is case work',
-        placeHolder: '#6654 three word summary',
-        validateInput: (v) => (parseNewSummary(v) ? null
-          : 'enter exactly three lowercase letters/digits words, optionally '
-            + 'behind a case number (#6654 three word summary)'),
-      });
-      if (!summary) return;
-      const parsed = parseNewSummary(summary);
-      args = ['new', parsed.slug];
-      if (parsed.caseNumber) args.push('--case', parsed.caseNumber);
-    } else if (!/^\d+$/.test(String(serial))) {
-      return;
-    } else if (cmd === 'test') {
-      args = ['test', String(serial)];
-    } else if (cmd === 'preview' || cmd === 'land') {
-      if (cmd === 'land') {
-        const readiness = await currentCi(repoPath);
-        if (!readiness || readiness.serial !== Number(serial) || readiness.state !== 'ready') {
-          vscode.window.showWarningMessage('Cannot land: ' + (readiness && readiness.reason || 'completion is not verified'));
-          return;
-        }
-      }
-      args = [cmd, String(serial)];
-    } else {
-      return;
-    }
-    // Python auto-activation can interrupt commands sent to a new shell.
-    // Process tasks retain a TTY without racing shell activation.
-    const task = new vscode.Task(
-      { type: CI_TASK_TYPE, repoPath, args },
-      vscode.TaskScope.Workspace,
-      'ci ' + args.join(' '),
-      'Minion HQ',
-      new vscode.ProcessExecution(ci, args, { cwd: repoPath }),
-      []
-    );
-    task.presentationOptions = {
-      reveal: vscode.TaskRevealKind.Always,
-      focus: true,
-      panel: vscode.TaskPanelKind.Dedicated,
-    };
-    try {
-      await vscode.tasks.executeTask(task);
-    } catch (e) {
-      vscode.window.showErrorMessage(`${task.name}: ${e.message}`);
     }
   }
 
@@ -2012,8 +1616,7 @@ class StatsViewProvider {
     if (!this.view) return;
     const repos = this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r));
     this.view.webview.postMessage({
-      type: 'data', repos, loading: this.loading, syncEnabled: !!this.syncCommand(),
-      previewEnabled: !!this.previewCommand(), ciEnabled: !!ciCommandPath(),
+      type: 'data', repos, loading: this.loading,
       agents: this.agents,
     });
   }
@@ -2039,31 +1642,6 @@ class StatsViewProvider {
       const letters = parseNameStatus(nsOut);
       const files = parseNumstat(numOut).map((f) => ({ ...f, letter: letters[f.path] || 'M' }));
       if (this.view) this.view.webview.postMessage({ type: 'commitFiles', repoPath: m.repoPath, hash: m.hash, files });
-    } else if (m.type === 'synctest') {
-      this.runSyncTest(m.repoPath);
-    } else if (m.type === 'preview') {
-      this.runPreview(m.repoPath);
-    } else if (m.type === 'ci') {
-      this.runCi(m.cmd, m.repoPath, m.serial);
-    } else if (m.type === 'commit') {
-      const repoName = path.basename(m.repoPath);
-      const steps = [
-        ['add', '-A'],
-        ['commit', '-m', m.message],
-      ];
-      if (m.push) steps.push(['push']);
-      for (const args of steps) {
-        const r = await gitFull(m.repoPath, args);
-        if (r.code !== 0) {
-          vscode.window.showErrorMessage(`${repoName}: git ${args[0]} failed — ${(r.err || r.out).trim().slice(0, 300)}`);
-          this.refresh();
-          return;
-        }
-      }
-      const sha = (await git(m.repoPath, ['rev-parse', '--short', 'HEAD'])).trim();
-      vscode.window.setStatusBarMessage(`$(check) ${repoName}: committed ${sha}${m.push ? ' and pushed' : ''}`, 5000);
-      if (this.view) this.view.webview.postMessage({ type: 'committed', repoPath: m.repoPath });
-      this.refresh();
     } else if (m.type === 'open') {
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));
       const base = path.basename(m.path);
@@ -2242,9 +1820,6 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(repoPoll) });
 
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(scheduleRefresh));
-  context.subscriptions.push(vscode.tasks.onDidEndTaskProcess((e) => {
-    if (e.execution.task.definition.type === CI_TASK_TYPE) scheduleRefresh();
-  }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     // a changed exclude list changes which worktrees have rows at all
     if (e.affectsConfiguration('scmDiffStats.excludePaths')) syncRepos();

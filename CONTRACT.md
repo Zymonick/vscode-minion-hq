@@ -79,7 +79,8 @@ record hash, tested base and proof policies/fingerprint. Missing, malformed or
 stale evidence fails closed with a reason. Master movement requires integration
 verification. Legacy PRs have no inferred completion.
 
-Land controls are disabled unless ready and revalidate current state when
-clicked. CI remains authoritative at execution. The test button invokes the
-supported fast test command without retired repair flags. Use the existing
+Minion HQ displays CI state without controls to create PRs, start previews,
+run tests, land, commit, push, or launch repair agents. Run those actions in
+the terminal. Legacy action messages and command settings do not enable them.
+Keep file and diff navigation, refresh, and expansion controls. Use the existing
 refresh lifecycle; do not add polling or background jobs for readiness.

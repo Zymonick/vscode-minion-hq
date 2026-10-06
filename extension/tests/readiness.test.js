@@ -117,7 +117,7 @@ test('unknown HEAD cannot become ready even with fabricated empty evidence', asy
 });
 
 
-test('rendered rows keep task state separate and disable unfinished landing', (t) => {
+test('rendered rows keep task state separate without steering controls', (t) => {
   const f = fixture(t);
   const root = { innerHTML: '' };
   let receive;
@@ -136,7 +136,6 @@ test('rendered rows keep task state separate and disable unfinished landing', (t
     }] } });
     assert.ok(root.innerHTML.includes('[' + state.replaceAll('-', ' ') + ']'));
     assert.match(root.innerHTML, /Smoke passed/);
-    const button = root.innerHTML.match(/<button[^>]*data-cmd="land"[^>]*>/)[0];
-    assert.equal(button.includes('disabled'), state !== 'ready');
+    assert.doesNotMatch(root.innerHTML, /<button\b|<input\b/);
   }
 });

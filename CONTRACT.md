@@ -93,7 +93,10 @@ refresh lifecycle; do not add polling or background jobs for readiness.
 
 Deployment updates the default VS Code profile and each existing profile that
 already registers Minion HQ in the target extension host. In WSL, use the VS Code
-server profile registry. Resolve profile names from VS Code metadata before
+server profile registry and the live window CLI for named profiles; the
+headless WSL launcher does not select them. Only use window connections that
+already report Minion HQ installed. Inactive profiles must be opened before
+retrying a deployment that cannot update them. Resolve profile names from VS Code metadata before
 installation; missing names fail deployment. Use the VS Code CLI for all writes.
 Verify each target profile registers the released version and its installed
 files match the tested package, excluding only installer-added manifest metadata.

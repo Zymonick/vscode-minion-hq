@@ -1,6 +1,8 @@
 import contextlib
 import io
 import json
+import os
+import socket
 from pathlib import Path
 import subprocess
 import tempfile
@@ -20,6 +22,7 @@ class InstallTests(unittest.TestCase):
         self.user = self.home / '.vscode-server/data/User'
         self.profiles = {None: self.extensions / 'extensions.json'}
         self.calls = []
+        self.windows = [('/fake/remote-code', {'MINION_TEST_PROFILE': 'Minion profile with spaces'})]
         self.version = '0.13.18'
         self.vsix = self.home / 'release with spaces.vsix'
         self.manifest = {'publisher': 'simon', 'name': 'scm-diff-stats', 'version': self.version}
@@ -45,11 +48,12 @@ class InstallTests(unittest.TestCase):
         metadata.write_text(json.dumps({'userDataProfiles': [{'location': identifier, 'name': name}]}))
         return registry
 
-    def fake_cli(self, command, check):
+    def fake_cli(self, command, check, env=None, timeout=None):
         self.assertTrue(check)
-        self.assertEqual(command[:4], ['/fake/code with spaces', '--install-extension', str(self.vsix), '--force'])
-        name = command[5] if len(command) > 4 else None
-        if name:
+        self.assertIn(command[0], ['/fake/code with spaces', '/fake/remote-code'])
+        self.assertEqual(command[1:4], ['--install-extension', str(self.vsix), '--force'])
+        name = (env or {}).get('MINION_TEST_PROFILE') or (command[5] if len(command) > 4 else None)
+        if name and env is None:
             self.assertEqual(command[4], '--profile')
         self.calls.append(name)
         self.write_registration(self.profiles[name], self.version)
@@ -62,11 +66,14 @@ class InstallTests(unittest.TestCase):
         (installed / 'package.json').write_text(json.dumps(manifest))
 
     def run_install(self, cli=None):
-        with mock.patch.object(install.subprocess, 'run', side_effect=cli or self.fake_cli), contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(install, 'window_installers', return_value=self.windows), \
+                mock.patch.object(install.subprocess, 'run', side_effect=cli or self.fake_cli), \
+                contextlib.redirect_stdout(io.StringIO()):
             install.install('/fake/code with spaces', self.vsix, self.home)
 
     def test_updates_default_and_existing_profiles_without_adding_to_unrelated_profiles(self):
         self.add_profile()
+        self.windows = self.windows * 2  # Two CLI connections may belong to one window.
         unrelated = self.user / 'profiles/unrelated/extensions.json'
         unrelated.parent.mkdir(parents=True)
         unrelated.write_text('[]')
@@ -79,8 +86,8 @@ class InstallTests(unittest.TestCase):
     def test_successful_cli_cannot_hide_a_stale_named_profile(self):
         self.add_profile()
 
-        def cli(command, check):
-            if '--profile' not in command:
+        def cli(command, check, **kwargs):
+            if command[0] != '/fake/remote-code':
                 self.fake_cli(command, check)
 
         with self.assertRaisesRegex(RuntimeError, 'not registered.*profiles/abc'):
@@ -127,6 +134,41 @@ class InstallTests(unittest.TestCase):
         self.add_profile()
         self.run_install()
         self.assertEqual(self.calls, [None, 'Minion profile with spaces'])
+
+
+    def test_named_wsl_profile_without_live_window_fails(self):
+        self.add_profile()
+        self.windows = []
+        with self.assertRaisesRegex(RuntimeError, 'Open the VS Code profiles'):
+            self.run_install()
+        self.assertEqual(install.registration(self.profiles['Minion profile with spaces'])['version'], '0.13.16')
+
+    def test_only_live_windows_already_using_minion_are_install_targets(self):
+        cli = self.home / '.vscode-server/bin/commit/bin/remote-cli/code'
+        cli.parent.mkdir(parents=True)
+        cli.write_text('fixture')
+        runtime = self.home / 'runtime'
+        runtime.mkdir()
+        for name in ['minion', 'other', 'stale']:
+            sock = socket.socket(socket.AF_UNIX)
+            self.addCleanup(sock.close)
+            sock.bind(str(runtime / ('vscode-ipc-' + name + '.sock')))
+
+        def probe(command, **kwargs):
+            self.assertEqual(command, [str(cli), '--list-extensions', '--show-versions'])
+            self.assertNotIn('VSCODE_CLIENT_COMMAND', kwargs['env'])
+            hook = kwargs['env']['VSCODE_IPC_HOOK_CLI']
+            if 'stale' in hook:
+                raise subprocess.TimeoutExpired(command, 5)
+            output = 'simon.scm-diff-stats@0.13.16\n' if 'minion.sock' in hook else 'other.extension@1.0.0\n'
+            return subprocess.CompletedProcess(command, 0, output)
+
+        with mock.patch.dict(os.environ, {'XDG_RUNTIME_DIR': str(runtime), 'VSCODE_CLIENT_COMMAND': 'headless-launcher'}), \
+                mock.patch.object(install.subprocess, 'run', side_effect=probe):
+            result = install.window_installers(self.home)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0], str(cli))
+        self.assertTrue(result[0][1]['VSCODE_IPC_HOOK_CLI'].endswith('vscode-ipc-minion.sock'))
 
     def test_another_extension_is_refused_before_installation(self):
         with zipfile.ZipFile(self.vsix, 'w') as package:

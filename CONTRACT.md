@@ -68,17 +68,20 @@ base with the same HEAD used by the branch diff; unscored files show no score.
 
 ## PR readiness
 
-Show one task status marker per PR: WIP, blocked, verification needed, ready,
-testing, or landed. Put the readiness reason and technical check result in that
-marker's tooltip; do not render a separate check-result indicator. A stored
-green test file never means ready. Landed and running CI states take precedence
-and use their own tooltip, without superseded readiness or check details.
+Show one task status marker per PR using the landed Kylie's `pr_status` report.
+Read the report through the integration runtime and `scripts/ci`, never through
+an unlanded worktree copy. Do not duplicate proof-policy versions or completion
+validation in the extension. Use a bounded, read-only subprocess within the
+existing repository scan, with optional Git locks and Python bytecode writes
+disabled. An unavailable runtime or malformed report shows `status unavailable`.
 
-Ready requires a single ready marker, clean worktree, valid current development
-proof, and CI's versioned completion seal matching HEAD, the tracked completion
-record hash, tested base and proof policies/fingerprint. Missing, malformed or
-stale evidence fails closed with a reason. Master movement requires integration
-verification. Legacy PRs have no inferred completion.
+Preserve CI's specific labels for missing sign-off, outdated review, failed or
+outdated checks, WIP, blocked work and ready-to-land work. Show the complete
+readiness reasons, check result, agent review, owners and next actions in the
+single marker's tooltip. Later operator steps remain separate from unfinished
+PR work. Do not render a second check-result indicator. Landed and running CI
+states take precedence and use their own tooltip, without superseded readiness
+or check details. A stored green test file alone never means ready.
 
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in

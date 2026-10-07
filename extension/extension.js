@@ -3,7 +3,6 @@ const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
 
 const REPO_CONCURRENCY = 2;
 const MAX_UNTRACKED_BYTES = 5 * 1024 * 1024;
@@ -296,8 +295,7 @@ async function collectRepo(repoPath, testing) {
   }
 
   const totals = sumFiles([...staged, ...unstaged, ...untracked]);
-  const dirtyCount = staged.length + unstaged.length + untracked.length;
-  const ci = await collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha);
+  const ci = await collectCi(repoPath, branch);
   if (ci && testing && testing.has(ci.serial)) {
     ci.state = 'testing'; ci.reason = 'A CI operation is running'; ci.checkLabel = 'Checks running';
   }
@@ -459,79 +457,85 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (testing && testing.has(serial)) status = 'testing';
   else if (readiness) status = readiness.state;
   else if (known) status = 'wip';
-  return (label || status) ? { serial, label, status, reason: readiness && readiness.reason } : null;
+  return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
+    statusLabel: readiness && status === readiness.state ? readiness.statusLabel : undefined } : null;
 }
 
-// Completion and technical checks are separate. CI owns the completion seal;
-// edits, later commits and missing evidence fail closed in this read-only view.
-function readCiJson(directory, name) {
-  try {
-    const value = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
+// Import only the landed CI's read-only report. Never execute a worktree's CI
+// entry point or maintain a second copy of its proof/completion policy here.
+const KYLIE_PYTHON = '/home/azrael/kylie/env/bin/python';
+const CI_STATUS_READER = String.raw`
+import importlib.machinery
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+loader = importlib.machinery.SourceFileLoader('minion_ci_status', '/home/azrael/kylie/scripts/ci')
+spec = importlib.util.spec_from_loader(loader.name, loader)
+ci = importlib.util.module_from_spec(spec)
+loader.exec_module(ci)
+worktree = Path(sys.argv[1]).resolve()
+if worktree.parent != ci.WORKTREES.resolve() or not ci.re.fullmatch(r'pr-[0-9]+', worktree.name):
+    raise ValueError('Not a canonical Kylie PR worktree')
+print(json.dumps(ci.pr_status(int(worktree.name[3:]), worktree)))
+`;
+
+function validCiReport(report) {
+  return report && typeof report === 'object' && !Array.isArray(report)
+    && ['status', 'checks', 'review', 'next'].every((key) => typeof report[key] === 'string' && report[key])
+    && Array.isArray(report.issues) && report.issues.every((issue) => issue && typeof issue === 'object'
+      && ['status', 'detail', 'owner', 'action'].every((key) => typeof issue[key] === 'string' && issue[key]))
+    && Array.isArray(report.operator_steps) && report.operator_steps.every((step) => typeof step === 'string' && step);
 }
 
-async function collectCi(repoPath, branch, vsMaster, dirtyCount, masterSha) {
+function readCiReport(repoPath) {
+  return new Promise((resolve, reject) => {
+    cp.execFile(KYLIE_PYTHON, ['-I', '-B', '-c', CI_STATUS_READER, repoPath], {
+      cwd: repoPath, encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }, (error, stdout) => {
+      if (error) {
+        reject(new Error(error.killed ? 'CI status read timed out' : 'Cannot read the landed CI status'));
+        return;
+      }
+      try {
+        const report = JSON.parse(stdout);
+        if (!validCiReport(report)) {
+          throw new Error('Invalid CI status report');
+        }
+        resolve(report);
+      } catch (error) {
+        reject(new Error('Cannot read CI status report: ' + error.message));
+      }
+    });
+  });
+}
+
+async function collectCi(repoPath, branch) {
   if (!branch || branch === 'master' || branch === 'main') return null;
   const m = path.basename(repoPath).match(/^pr-(\d+)$/);
   if (!m) return null;
   const serial = +m[1];
   if (!fs.existsSync(path.join(repoPath, 'docs', 'PR_' + serial))) return null;
-  const ciState = ciStateDir(repoPath);
-  const tested = readCiJson(ciState, 'pr-' + serial + '.tested.json');
-  const seal = readCiJson(ciState, 'pr-' + serial + '.ready.json');
-  const headSha = (await git(repoPath, ['rev-parse', 'HEAD'])).trim();
-  const sha = /^[0-9a-f]{40}$/;
-  const validProof = tested && sha.test(tested.branch_sha) && sha.test(tested.master_sha)
-    && tested.gate_policy === 6 && tested.fingerprint_version === 2
-    && /^[0-9a-f]{64}$/.test(tested.fingerprint) && typeof tested.time === 'string'
-    && Array.isArray(tested.targets) && tested.targets.every((target) => typeof target === 'string' && target)
-    && ((tested.suite === 'inert' || tested.suite === 'full') ? tested.targets.length === 0
-      : tested.suite === 'ci-self' ? tested.targets.join(',') === 'scripts.quick_tests'
-        : tested.suite === 'smoke' ? tested.targets.length > 0 : false);
-  const currentCheck = validProof && !dirtyCount && sha.test(headSha) && tested.branch_sha === headSha;
-  const checkNames = { smoke: 'Smoke passed', inert: 'Configuration passed', 'ci-self': 'CI checks passed', full: 'Full suite passed' };
-  const checkLabel = currentCheck ? checkNames[tested.suite] : tested ? 'Checks stale' : 'Checks missing';
-  let markers;
   try {
-    markers = fs.readdirSync(repoPath).filter((name) => name.startsWith('status_')
-      && fs.statSync(path.join(repoPath, name)).isFile());
-  } catch {
-    return { serial, state: 'verification-needed', reason: 'Cannot read task state', checkLabel };
-  }
-  const marker = markers.length === 1 && /^status_(wip|ready|blocked)(?:-[a-z0-9._-]+)?$/.exec(markers[0]);
-  let state = 'verification-needed', reason = '';
-  if (!markers.length || (marker && marker[1] === 'wip')) {
-    state = 'wip'; reason = 'Completion has not been declared';
-  } else if (marker && marker[1] === 'blocked') {
-    state = 'blocked'; reason = markers[0].replace(/^status_blocked-?/, '') || 'Awaiting a decision or repair';
-  } else if (!marker) {
-    reason = 'Conflicting or invalid task markers';
-  } else if (dirtyCount) {
-    reason = 'Working tree changed after verification';
-  } else if (!validProof || !sha.test(headSha) || tested.branch_sha !== headSha) {
-    reason = 'No current technical check evidence';
-  } else if (!seal || seal.version !== 1 || seal.branch_sha !== headSha) {
-    reason = 'Completion is missing or belongs to an earlier revision';
-  } else if (['master_sha', 'gate_policy', 'fingerprint_version'].some((key) => seal[key] !== tested[key])
-    || seal.proof_fingerprint !== tested.fingerprint) {
-    reason = 'Check evidence changed after completion';
-  } else {
-    let digest = '';
-    try {
-      digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(repoPath, 'docs', 'PR_' + serial, 'completion.json'))).digest('hex');
-    } catch { /* A missing record cannot establish completion. */ }
-    if (!digest || digest !== seal.record_sha256) {
-      reason = 'Completion record changed or is missing';
-    } else if ((vsMaster && vsMaster.behind > 0) || tested.master_sha !== masterSha) {
-      reason = 'Integration check needed: master moved';
-    } else {
-      state = 'ready'; reason = 'Completed scope and verification sealed for this revision';
+    const report = await readCiReport(repoPath);
+    const details = report.issues.map((issue) => issue.status + ': ' + issue.detail
+      + '\n' + issue.owner + ': ' + issue.action);
+    if (!details.length) {
+      details.push(report.next);
     }
+    details.push(...report.operator_steps.map((step) => 'Operator after landing: ' + step));
+    return {
+      serial, state: report.status.split(':')[0].split(' (')[0].replace(/ /g, '-'),
+      statusLabel: report.status, reason: details.join('\n'),
+      checkLabel: report.checks, reviewLabel: report.review,
+    };
+  } catch (error) {
+    return { serial, state: 'status-unavailable', statusLabel: 'status unavailable',
+      reason: error.message + '\nAgent: inspect CI status; /home/azrael/kylie/scripts/ci status ' + serial,
+      checkLabel: 'Checks unavailable', reviewLabel: 'Agent sign-off unavailable' };
   }
-  return { serial, state, reason, checkLabel, suite: tested && tested.suite, time: tested && tested.time };
 }
 
 // ── Vendored dependencies vs master ─────────────────────────────────────────
@@ -1078,8 +1082,11 @@ function getHtml(nonce) {
   .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
-  .prst-blocked, .prst-verification-needed { color: var(--vscode-charts-yellow, #d7ba7d); }
-  .prst-ready { color: var(--vscode-charts-green, #89d185); }
+  .prst-blocked, .prst-checks-outdated, .prst-checks-missing, .prst-agent-sign-off-missing,
+  .prst-agent-review-outdated, .prst-agent-sign-off-incomplete, .prst-agent-sign-off-outdated,
+  .prst-agent-documentation-incomplete, .prst-status-unavailable { color: var(--vscode-charts-yellow, #d7ba7d); }
+  .prst-checks-failed { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+  .prst-ready, .prst-ready-to-land { color: var(--vscode-charts-green, #89d185); }
   .prst-open { color: var(--vscode-descriptionForeground); }
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
 </style>
@@ -1099,14 +1106,15 @@ state.collapsed = state.collapsed || {};
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-// Effective task readiness; the check result is displayed separately.
+// One task marker; checks, agent review and actions stay in its tooltip.
 const PR_STATUS_TIP = {
   landed: 'landed — master carries the squash commit for this PR',
   testing: 'testing — a live ci test / ci land run holds the lock for this PR',
   ready: 'Completion and verification recorded for the current revision',
   wip: 'Work in progress; passed checks do not establish completion',
   blocked: 'Awaiting a decision or repair',
-  'verification-needed': 'Completion or current verification is missing',
+  'ready-to-land': 'Completion and verification recorded for the current revision',
+  'status-unavailable': 'The CI status could not be read',
   open: 'open — the worktree exists; no green test record yet',
   gone: 'gone — CI knows this PR, but its worktree is gone',
 };
@@ -1117,9 +1125,9 @@ function prTag(pr, ci) {
   if (!pr || !pr.status) return '';
   const reason = pr.status === 'landed' || pr.status === 'testing'
     ? PR_STATUS_TIP[pr.status]
-    : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel].filter(Boolean).join('\\n');
+    : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel, ci?.reviewLabel].filter(Boolean).join('\\n');
   return '<span class="prst prst-' + esc(pr.status) + '" title="'
-    + esc(reason) + '">[' + esc(pr.status.replace(/-/g, ' ')) + ']</span>';
+    + esc(reason) + '">[' + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }

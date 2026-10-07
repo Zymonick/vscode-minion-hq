@@ -51,14 +51,7 @@ fi
 CODE=$(command -v code || true)
 CODE=${CODE:-$(ls -t "$HOME"/.vscode-server/bin/*/bin/remote-cli/code 2>/dev/null | head -1 || true)}
 if [ -n "$CODE" ]; then
-  "$CODE" --install-extension "$VSIX" --force
-  SERVER_PACKAGE="$HOME/.vscode-server/extensions/simon.scm-diff-stats-$VERSION/package.json"
-  LOCAL_PACKAGE="$HOME/.vscode/extensions/simon.scm-diff-stats-$VERSION/package.json"
-  if [ ! -f "$SERVER_PACKAGE" ] && [ ! -f "$LOCAL_PACKAGE" ]; then
-    echo "installer returned without installing Minion HQ $VERSION" >&2
-    exit 1
-  fi
-  echo "installed Minion HQ $VERSION — reload the VS Code window to pick it up"
+  python3 install.py "$CODE" "$VSIX"
 else
   echo "code CLI not found; install manually: code --install-extension $VSIX"
   exit 1

@@ -5,4 +5,5 @@ cd "$(dirname "$0")"
 NODE_BIN=${NODE_BIN:-node}
 "$NODE_BIN" --check extension/extension.js
 "$NODE_BIN" --test extension/tests/*.test.js
+python3 -B -m unittest discover -s tests -p 'test_*.py'
 ./build.sh --package-only

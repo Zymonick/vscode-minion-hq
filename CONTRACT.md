@@ -88,3 +88,13 @@ run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.
 Keep file and diff navigation, refresh, and expansion controls. Use the existing
 refresh lifecycle; do not add polling or background jobs for readiness.
+
+## Installation
+
+Deployment updates the default VS Code profile and each existing profile that
+already registers Minion HQ in the target extension host. In WSL, use the VS Code
+server profile registry. Resolve profile names from VS Code metadata before
+installation; missing names fail deployment. Use the VS Code CLI for all writes.
+Verify each target profile registers the released version and its installed
+files match the tested package, excluding only installer-added manifest metadata.
+An existing version directory alone does not prove installation.

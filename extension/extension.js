@@ -452,13 +452,13 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   const slug = readCiState(ciState, 'pr-' + serial + '.slug');
   const label = labelFrom(slug, readCiState(ciState, 'pr-' + serial + '.case'));
   const known = fs.existsSync(ciState); // an unrelated repo named pr-N stays untagged
-  let status = '';
+  let status = '', statusLabel;
   if ((await landedSerials(repoPath, masterSha)).has(serial)) status = 'landed';
   else if (testing && testing.has(serial)) status = 'testing';
-  else if (readiness) status = readiness.state;
+  else if (readiness) { status = readiness.state; statusLabel = readiness.statusLabel; }
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
-    statusLabel: readiness && status === readiness.state ? readiness.statusLabel : undefined } : null;
+    statusLabel } : null;
 }
 
 // Import only the landed CI's read-only report. Never execute a worktree's CI

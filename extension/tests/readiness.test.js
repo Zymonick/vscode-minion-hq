@@ -21,11 +21,13 @@ function fixture(t) {
   let failure = null, raw;
   const api = vm.runInNewContext(source + `
     landedSerials = async () => new Set();
-    ({ collectCi, collectPr, getHtml });
+    git = async (_, args) => args.join(' ') === 'rev-parse --abbrev-ref HEAD' ? 'pr-7' : '';
+    ({ collectCi, collectPr, collectRepo, getHtml });
   `, {
     module: { exports: {} }, process, Buffer,
     require: (name) => {
-      if (name === 'vscode') return { window: { createOutputChannel: () => ({}) } };
+      if (name === 'vscode') return { window: { createOutputChannel: () => ({}) },
+        workspace: { getConfiguration: () => ({ get: (_, fallback) => fallback }) }, Uri: { file: (value) => value } };
       if (name === 'child_process') return { execFile(command, args, options, callback) {
         calls.push({ command, args: Array.from(args), options });
         callback(failure, raw === undefined ? JSON.stringify(report) : raw);
@@ -124,10 +126,10 @@ test('unavailable, timed out and malformed reports cannot imply readiness', asyn
 test('testing overrides obsolete readiness labels', async (t) => {
   const f = fixture(t);
   f.report.status = 'agent sign-off missing';
-  const result = await f.collect();
-  const identity = await f.collectPr(f.repo, 'master', new Set([7]), result);
-  assert.equal(identity.status, 'testing');
-  assert.equal(identity.statusLabel, undefined);
+  const result = await f.collectRepo(f.repo, new Set([7]));
+  assert.equal(result.ci.state, 'testing');
+  assert.equal(result.pr.status, 'testing');
+  assert.equal(result.pr.statusLabel, undefined);
 });
 
 test('rendered rows show one task marker with check, review and action details', (t) => {

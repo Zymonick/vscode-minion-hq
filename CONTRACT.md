@@ -100,16 +100,27 @@ readiness.
 ## Claude per PR
 
 Every PR row carries one Claude control; other rows have none. It opens the
-PR's newest Claude session: an id in `.ci/session-titles` whose title
-`scripts/rename-session` began with that `pr-N`, with a transcript in the
-Claude project directory of one of the window's workspace folders. Codex
-threads in the same registry and sessions of other projects do not count.
-Without such a session, it opens a new Claude Code session whose input holds the
-PR's prompt: serial, label, worktree path, CI status and, unless landed or
-testing, the readiness details. The prompt is never sent automatically, and the
-control starts no CI run or agent work by itself. Clicking it never toggles the
-row. Look sessions up on click, never during refresh, polling, or agent
-scans.
+PR's Claude session as the `claude` CLI in a VS Code terminal named
+`Claude pr-N`, never in the Claude Code chat panel:
+
+- A running `Claude pr-N` terminal is focused.
+- Otherwise the PR's newest Claude session resumes with `claude --resume <id>`
+  in the folder it started in. A session belongs to the PR when its id in
+  `.ci/session-titles` has a title `scripts/rename-session` began with that
+  `pr-N`, and its transcript lies in the Claude project directory of the PR
+  worktree or of a workspace folder. Codex threads in the same registry and
+  sessions of other projects do not count.
+- A session that is already running is never resumed a second time: the
+  terminal whose process tree holds it is focused, or, outside this window's
+  terminals, a message names its pid. Liveness comes from Claude's session
+  record with a matching process start time.
+- Without a session, `claude` starts in the PR worktree, so its first prompt
+  attaches it to the PR.
+
+`claude` is the terminal's process, not a command typed into a shell. Minion HQ
+sends no prompt and starts no CI run or agent work by itself. Clicking the
+control never toggles the row. Look sessions up on click, never during refresh,
+polling, or agent scans.
 
 ## Installation
 

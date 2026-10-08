@@ -1268,9 +1268,9 @@ function render() {
       agentHtml = '<span class="agent" title="agent session(s) working in this worktree: '
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
-    // Every PR carries a Claude prompt: its own Claude session, or a new one holding the PR's prompt.
+    // Every PR carries a Claude prompt: its Claude session in a VS Code terminal.
     const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
-      + esc('Claude: open the session for ' + r.name + ', or start one with its prompt (not sent)') + '">✻</span>' : '';
+      + esc('Claude: open the terminal for ' + r.name + ', resuming its session or starting one') + '">✻</span>' : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1458,6 +1458,13 @@ function claudeSessionRepo(c, repoPaths) {
   }
 }
 
+// A process's parent and starttime; the starttime matches a Claude session record's procStart.
+function procStat(pid) {
+  const stat = fs.readFileSync(`/proc/${pid}/stat`).toString();
+  const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+  return { ppid: +f[1], start: f[19] };
+}
+
 function scanAgents(repoPaths) {
   // agent processes (claude/codex) attributed to the repo they work in
   const map = {};
@@ -1469,10 +1476,7 @@ function scanAgents(repoPaths) {
     try {
       cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
       cmd = fs.readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean);
-      const stat = fs.readFileSync(`/proc/${pid}/stat`).toString();
-      const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-      ppid = +f[1];
-      start = f[19]; // starttime, matches the session record's procStart
+      ({ ppid, start } = procStat(pid));
     } catch { continue; }
     if (!cmd.length) continue;
     const exe = path.basename(cmd[0]);
@@ -1502,42 +1506,94 @@ function scanAgents(repoPaths) {
 }
 
 // ── Claude per PR ───────────────────────────────────────────────────────────
-// Every PR row carries a Claude prompt. scripts/rename-session records each
-// agent session's PR title in .ci/session-titles/<id>; Codex threads share that
-// directory, so only ids with a Claude transcript count. Claude Code in this
-// window resumes sessions of its workspace folders, so only their project
-// directories are searched. Looked up on click, never during a refresh.
+// Every PR row carries a Claude prompt: `claude` in a VS Code terminal.
+// scripts/rename-session records each agent session's PR title in
+// .ci/session-titles/<id>; Codex threads share that directory, so only ids with
+// a Claude transcript count. A session resumes in the folder it started in, the
+// PR worktree or a workspace folder. Looked up on click, never during a refresh.
 function claudeSessionForPr(repoPath, serial) {
   const titles = path.join(ciStateDir(repoPath), 'session-titles');
   const projects = path.join(process.env.HOME || '', '.claude', 'projects');
-  const dirs = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath.replace(/[^a-zA-Z0-9]/g, '-'));
+  const folders = [repoPath, ...(vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath)];
   const own = new RegExp('^pr-' + serial + '(?![0-9])', 'i');
   let ids;
   try { ids = fs.readdirSync(titles); } catch { return null; }
   let newest = null;
   for (const id of ids) {
     if (!own.test(readCiState(titles, id) || '')) continue;
-    for (const dir of dirs) {
+    for (const cwd of folders) {
       let mtime;
-      try { mtime = fs.statSync(path.join(projects, dir, id + '.jsonl')).mtimeMs; } catch { continue; }
-      if (!newest || mtime > newest.mtime) newest = { id, mtime };
+      try {
+        mtime = fs.statSync(path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), id + '.jsonl')).mtimeMs;
+      } catch { continue; }
+      if (!newest || mtime > newest.mtime) newest = { id, cwd, mtime };
     }
   }
-  return newest && newest.id;
+  return newest;
 }
 
-// A new session's prompt, left unsent: the PR, its worktree and what CI says is
-// next. Sending it lets scripts/rename-session attach the session to the PR by
-// the worktree path, so the row reopens that session afterwards.
-function claudePrompt(repo) {
-  const pr = repo.pr;
-  const lines = ['Continue PR ' + pr.serial + (pr.label ? ' (' + pr.label + ')' : '') + ' in ' + repo.repoPath + '.'];
-  if (pr.status) lines.push('CI status: ' + pr.status.replace(/-/g, ' '));
-  // Landed and running CI states supersede the readiness details, as in the marker's tooltip.
-  if (pr.reason && pr.status !== 'landed' && pr.status !== 'testing') {
-    lines.push(...pr.reason.split('\n').filter((line) => !line.startsWith('CI status: ')));
+// The live process of a Claude session, from Claude's session records. A pid
+// that now names another process no longer matches the record's procStart.
+function claudeSessionPid(sessionId) {
+  const dir = path.join(process.env.HOME || '', '.claude', 'sessions');
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return null; }
+  for (const name of names) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(dir, name)));
+      if (meta.sessionId === sessionId && procStat(meta.pid).start === String(meta.procStart)) return meta.pid;
+    } catch { /* not a session record, or its process has exited */ }
   }
-  return lines.join('\n');
+  return null;
+}
+
+// The window's terminal whose process tree holds pid.
+async function terminalRunning(pid) {
+  const tree = new Set();
+  for (let p = pid; p > 1 && !tree.has(p);) {
+    tree.add(p);
+    try { p = procStat(p).ppid; } catch { break; }
+  }
+  for (const terminal of vscode.window.terminals) {
+    if (tree.has(await terminal.processId)) return terminal;
+  }
+  return null;
+}
+
+function claudeExecutable() {
+  const dirs = [...(process.env.PATH || '').split(path.delimiter), path.join(process.env.HOME || '', '.local', 'bin')];
+  for (const dir of dirs.filter(Boolean)) {
+    try {
+      fs.accessSync(path.join(dir, 'claude'), fs.constants.X_OK);
+      return path.join(dir, 'claude');
+    } catch { /* not in this directory */ }
+  }
+  return null;
+}
+
+// Focus the PR's Claude terminal; else resume its newest session, or start
+// one in its worktree, where the first prompt attaches it to the PR. Claude is
+// the terminal's process, so no shell activation races its start, and a
+// session already running elsewhere is never resumed a second time.
+async function openClaude(repo) {
+  const name = 'Claude ' + repo.name;
+  const own = vscode.window.terminals.find((t) => !t.exitStatus
+    && (t.name === name || (t.creationOptions && t.creationOptions.name === name)));
+  if (own) return own.show();
+  const session = claudeSessionForPr(repo.repoPath, repo.pr.serial);
+  const pid = session && claudeSessionPid(session.id);
+  if (pid) {
+    const running = await terminalRunning(pid);
+    if (running) return running.show();
+    vscode.window.showInformationMessage(`The Claude session for ${repo.name} is already running outside this window's terminals (pid ${pid}).`);
+    return;
+  }
+  const claude = claudeExecutable();
+  if (!claude) throw new Error('the claude CLI is not on PATH or in ~/.local/bin');
+  vscode.window.createTerminal({
+    name, cwd: session ? session.cwd : repo.repoPath,
+    shellPath: claude, shellArgs: session ? ['--resume', session.id] : [],
+  }).show();
 }
 
 function compareRepoPaths(a, b) {
@@ -1697,11 +1753,8 @@ class StatsViewProvider {
     } else if (m.type === 'claude') {
       const repo = this.data.get(m.repoPath);
       if (!repo || !repo.pr) return;
-      const session = claudeSessionForPr(repo.repoPath, repo.pr.serial);
       try {
-        // Claude Code reveals or resumes a session by id, or opens a new one with the prompt in its input.
-        await vscode.commands.executeCommand('claude-vscode.editor.open',
-          session || undefined, session ? undefined : claudePrompt(repo));
+        await openClaude(repo);
       } catch (error) {
         log('claude: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open Claude for ${repo.name}: ${error.message}`);

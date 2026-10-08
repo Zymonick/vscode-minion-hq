@@ -128,10 +128,12 @@ polling, or agent scans.
 Every PR row also carries one small Codex terminal icon with a Codex tooltip,
 opening the interactive CLI in a VS Code terminal named `Codex pr-N`. Focus
 that terminal when it is running;
-otherwise resume the newest matching session with `codex resume --no-daemon <id>`
-in its original folder. Without a session, start `codex --no-daemon` in the PR
-worktree. Launch without the shared background server so conflicting feature
-settings cannot request a restart or change settings for other clients.
+otherwise resume the newest matching session with
+`codex resume --no-daemon --approve-for-me <id>` in its original folder.
+Without a session, start `codex --no-daemon --approve-for-me` in the PR worktree.
+Use automatic approval review with the workspace-write sandbox for both launches.
+Launch without the shared background server so conflicting feature settings
+cannot request a restart or change settings for other clients.
 
 Match the PR title in `.ci/session-titles` to an unarchived Codex rollout whose
 metadata confirms the session id, an interactive CLI or IDE source, and the PR

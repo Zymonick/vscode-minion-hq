@@ -1705,7 +1705,9 @@ async function openCodex(repo) {
     const executable = agentExecutable('codex', preferred);
     if (!executable) throw new Error('the codex CLI is not on PATH or in ~/.local/bin');
     const options = { name, cwd: session ? session.cwd : repo.repoPath,
-      shellPath: executable, shellArgs: session ? ['resume', '--no-daemon', session.id] : ['--no-daemon'] };
+      shellPath: executable, shellArgs: session
+        ? ['resume', '--no-daemon', '--approve-for-me', session.id]
+        : ['--no-daemon', '--approve-for-me'] };
     if (session) {
       const sqliteHome = runtime ? runtime.CODEX_SQLITE_HOME : process.env.CODEX_SQLITE_HOME;
       options.env = { CODEX_HOME: session.home,

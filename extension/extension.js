@@ -1689,8 +1689,11 @@ async function openCodex(repo) {
   if (codexOpening.has(repo.repoPath)) return codexOpening.get(repo.repoPath);
   const opening = (async () => {
     const name = 'Codex ' + repo.name;
-    const own = vscode.window.terminals.find((t) => !t.exitStatus
-      && (t.name === name || (t.creationOptions && t.creationOptions.name === name)));
+    const own = vscode.window.terminals.find((t) => {
+      if (t.exitStatus) return false;
+      const owner = t.creationOptions?.env?.MINION_HQ_CODEX_PR;
+      return owner ? owner === repo.repoPath : t.name === name || t.creationOptions?.name === name;
+    });
     if (own) return own.show();
     const session = await codexSessionForPr(repo.repoPath, repo.pr.serial);
     const pid = session && codexSessionPid(session);
@@ -1704,14 +1707,17 @@ async function openCodex(repo) {
     const preferred = runtime && typeof runtime.executable === 'string' && path.isAbsolute(runtime.executable) ? runtime.executable : null;
     const executable = agentExecutable('codex', preferred);
     if (!executable) throw new Error('the codex CLI is not on PATH or in ~/.local/bin');
-    const options = { name, cwd: session ? session.cwd : repo.repoPath,
+    // A fixed VS Code terminal name disables the CLI's live title updates.
+    const titleArgs = ['-c', 'tui.terminal_title=["app-name","status","thread","project"]'];
+    const options = { cwd: session ? session.cwd : repo.repoPath,
+      env: { MINION_HQ_CODEX_PR: repo.repoPath },
       shellPath: executable, shellArgs: session
-        ? ['resume', '--no-daemon', '--approve-for-me', session.id]
-        : ['--no-daemon', '--approve-for-me'] };
+        ? ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, session.id]
+        : ['--no-daemon', '--approve-for-me', ...titleArgs] };
     if (session) {
       const sqliteHome = runtime ? runtime.CODEX_SQLITE_HOME : process.env.CODEX_SQLITE_HOME;
-      options.env = { CODEX_HOME: session.home,
-        CODEX_SQLITE_HOME: typeof sqliteHome === 'string' && path.isAbsolute(sqliteHome) ? sqliteHome : null };
+      Object.assign(options.env, { CODEX_HOME: session.home,
+        CODEX_SQLITE_HOME: typeof sqliteHome === 'string' && path.isAbsolute(sqliteHome) ? sqliteHome : null });
     }
     vscode.window.createTerminal(options).show();
   })();

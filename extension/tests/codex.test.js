@@ -7,6 +7,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
 const id = (n) => '11111111-1111-7111-8111-' + String(n).padStart(12, '0');
+const titleArgs = ['-c', 'tui.terminal_title=["app-name","status","thread","project"]'];
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-codex-'));
@@ -68,7 +69,7 @@ function fixture(t) {
       terminals,
       createTerminal(options) {
         created.push(options);
-        const value = terminal(options.name);
+        const value = terminal(options.name || 'codex');
         value.creationOptions = options;
         terminals.push(value);
         return value;
@@ -129,17 +130,17 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   const archived = f.session(11);
   fs.renameSync(archived, path.join(f.home, '.codex', 'archived-' + path.basename(archived)));
   await f.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Codex pr-7', cwd: f.repo,
-    shellPath: f.codex, shellArgs: ['resume', '--no-daemon', '--approve-for-me', id(2)],
-    env: { CODEX_HOME: path.join(f.home, '.codex'), CODEX_SQLITE_HOME: null } }]);
-  assert.deepEqual(f.shown, ['Codex pr-7']);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo,
+    shellPath: f.codex, shellArgs: ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(2)],
+    env: { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: path.join(f.home, '.codex'), CODEX_SQLITE_HOME: null } }]);
+  assert.deepEqual(f.shown, ['codex']);
   assert.deepEqual(f.errors, []);
 
   f.terminals.length = 0;
   f.session(12);
   await f.click();
   assert.equal(f.created[1].cwd, f.workspace);
-  assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', '--no-daemon', '--approve-for-me', id(12)]);
+  assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(12)]);
 });
 
 test('desktop sessions retain their recorded executable, CODEX_HOME and SQLite store', async (t) => {
@@ -151,8 +152,8 @@ test('desktop sessions retain their recorded executable, CODEX_HOME and SQLite s
   f.session(2, { runtime, source: 'vscode' });
   await f.click();
   assert.equal(f.created[0].shellPath, executable);
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', id(2)]);
-  assert.deepEqual({ ...f.created[0].env }, { CODEX_HOME: runtime.CODEX_HOME, CODEX_SQLITE_HOME: runtime.CODEX_SQLITE_HOME });
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(2)]);
+  assert.deepEqual({ ...f.created[0].env }, { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: runtime.CODEX_HOME, CODEX_SQLITE_HOME: runtime.CODEX_SQLITE_HOME });
 
   f.terminals.length = 0;
   fs.unlinkSync(executable);
@@ -168,24 +169,50 @@ test('CODEX_HOME is honored for sessions without recorded runtimes', async (t) =
   f.env.CODEX_SQLITE_HOME = path.join(f.root, 'custom sqlite');
   f.session(1);
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', id(1)]);
-  assert.deepEqual({ ...f.created[0].env }, { CODEX_HOME: f.env.CODEX_HOME, CODEX_SQLITE_HOME: f.env.CODEX_SQLITE_HOME });
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(1)]);
+  assert.deepEqual({ ...f.created[0].env }, { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: f.env.CODEX_HOME, CODEX_SQLITE_HOME: f.env.CODEX_SQLITE_HOME });
 });
 
-test('without a session, Codex starts in the PR worktree with no prompt; repeated clicks focus it', async (t) => {
+test('new Codex terminals accept live titles and remain attached to their PR after title changes', async (t) => {
   const f = fixture(t);
   f.session(1, { cwd: null });
   await Promise.all([f.click(), f.click()]);
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Codex pr-7', cwd: f.repo, shellPath: f.codex,
-    shellArgs: ['--no-daemon', '--approve-for-me'] }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, shellPath: f.codex,
+    env: { MINION_HQ_CODEX_PR: f.repo }, shellArgs: ['--no-daemon', '--approve-for-me', ...titleArgs] }]);
   const own = f.terminals[0];
+  own.name = 'Codex Working pr-7';
+  await f.click();
+  own.name = 'Codex Idle pr-7';
+  await f.click();
   own.name = 'Renamed terminal';
   await f.click();
   assert.equal(f.created.length, 1);
-  assert.deepEqual(f.shown, ['Codex pr-7', 'Renamed terminal']);
+  assert.deepEqual(f.shown, ['codex', 'Codex Working pr-7', 'Codex Idle pr-7', 'Renamed terminal']);
   own.exitStatus = { code: 0 };
   await f.click();
   assert.equal(f.created.length, 2, 'an exited terminal can be reopened');
+});
+
+test('terminals from earlier releases are focused even after a manual rename', async (t) => {
+  const f = fixture(t);
+  const old = f.terminal('Codex pr-7', 42);
+  old.name = 'My current work';
+  f.terminals.push(old);
+  await f.click();
+  assert.deepEqual(f.created, []);
+  assert.deepEqual(f.shown, ['My current work']);
+});
+
+test('restored terminal ownership survives title changes and takes precedence over another PR name', async (t) => {
+  const f = fixture(t);
+  const other = f.terminal('Codex pr-7', 42);
+  other.creationOptions = { env: { MINION_HQ_CODEX_PR: '/another/pr-8' } };
+  const own = f.terminal('Any live title', 43);
+  own.creationOptions = { env: { MINION_HQ_CODEX_PR: f.repo } };
+  f.terminals.push(other, own);
+  await f.click();
+  assert.deepEqual(f.created, []);
+  assert.deepEqual(f.shown, ['Any live title']);
 });
 
 test('a Codex CLI already resuming this session is focused or reported outside the window', async (t) => {
@@ -201,7 +228,7 @@ test('a Codex CLI already resuming this session is focused or reported outside t
   assert.deepEqual(f.infos, ["The Codex session for pr-7 is already running outside this window's terminals (pid 42)."]);
   f.processes.clear();
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', id(1)]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(1)]);
 });
 
 test('an open Codex rollout identifies a CLI session, while app servers and unrelated processes do not', async (t) => {

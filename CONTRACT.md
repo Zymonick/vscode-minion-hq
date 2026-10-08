@@ -126,8 +126,15 @@ polling, or agent scans.
 ## Codex per PR
 
 Every PR row also carries one small Codex terminal icon with a Codex tooltip,
-opening the interactive CLI in a VS Code terminal named `Codex pr-N`. Focus
-that terminal when it is running;
+opening the interactive CLI in a VS Code terminal. Use Codex's live terminal
+title with app name, activity status, session name and project, in that order.
+Pass the title fields as launch arguments; do not change global settings,
+assign a fixed terminal name, poll session state, or start background jobs.
+VS Code must allow agent CLI titles. A named session identifies its PR;
+a new session uses the PR worktree as its project until named.
+Associate each terminal with its PR path in `MINION_HQ_CODEX_PR` so title
+updates and manual renames do not open duplicate terminals. Continue to
+recognize existing `Codex pr-N` terminals. Focus that terminal when it is running;
 otherwise resume the newest matching session with
 `codex resume --no-daemon --approve-for-me <id>` in its original folder.
 Without a session, start `codex --no-daemon --approve-for-me` in the PR worktree.

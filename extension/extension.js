@@ -1084,7 +1084,8 @@ function getHtml(nonce) {
            animation: agentpulse 2s ease-in-out infinite; }
   @keyframes agentpulse { 50% { opacity: .4; } }
   .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
-  .claude:hover { opacity: 1; }
+  .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; font-size: .85em; flex: none; opacity: .75; }
+  .claude:hover, .codex:hover { opacity: 1; }
   .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
@@ -1268,9 +1269,11 @@ function render() {
       agentHtml = '<span class="agent" title="agent session(s) working in this worktree: '
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
-    // Every PR carries a Claude prompt: its Claude session in a VS Code terminal.
+    // Each PR opens its Claude or Codex prompt in a VS Code terminal.
     const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
       + esc('Claude: open the terminal for ' + r.name + ', resuming its session or starting one') + '">✻</span>' : '';
+    const codexHtml = r.pr ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
+      + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one') + '">Codex</span>' : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1282,7 +1285,7 @@ function render() {
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
-      btns: claudeHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
+      btns: claudeHtml + codexHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
     const sections = [
@@ -1344,6 +1347,11 @@ document.addEventListener('click', (ev) => {
   const claude = ev.target.closest('.claude');
   if (claude) {
     vscode.postMessage({ type: 'claude', repoPath: claude.dataset.claude });
+    return;
+  }
+  const codex = ev.target.closest('.codex');
+  if (codex) {
+    vscode.postMessage({ type: 'codex', repoPath: codex.dataset.codex });
     return;
   }
   const el = ev.target.closest('.row');
@@ -1560,12 +1568,14 @@ async function terminalRunning(pid) {
   return null;
 }
 
-function claudeExecutable() {
+function agentExecutable(command, preferred) {
   const dirs = [...(process.env.PATH || '').split(path.delimiter), path.join(process.env.HOME || '', '.local', 'bin')];
-  for (const dir of dirs.filter(Boolean)) {
+  const candidates = [preferred, ...dirs.filter(Boolean).map((dir) => path.join(dir, command))];
+  for (const file of candidates.filter(Boolean)) {
     try {
-      fs.accessSync(path.join(dir, 'claude'), fs.constants.X_OK);
-      return path.join(dir, 'claude');
+      if (!fs.statSync(file).isFile()) continue;
+      fs.accessSync(file, fs.constants.X_OK);
+      return file;
     } catch { /* not in this directory */ }
   }
   return null;
@@ -1588,12 +1598,120 @@ async function openClaude(repo) {
     vscode.window.showInformationMessage(`The Claude session for ${repo.name} is already running outside this window's terminals (pid ${pid}).`);
     return;
   }
-  const claude = claudeExecutable();
+  const claude = agentExecutable('claude');
   if (!claude) throw new Error('the claude CLI is not on PATH or in ~/.local/bin');
   vscode.window.createTerminal({
     name, cwd: session ? session.cwd : repo.repoPath,
     shellPath: claude, shellArgs: session ? ['--resume', session.id] : [],
   }).show();
+}
+
+// Codex shares the PR title registry, but stores rollouts under CODEX_HOME.
+// Desktop sessions can use a different executable and home from the terminal.
+// Resolve only on click; read candidate metadata, never whole conversations.
+async function codexSessionForPr(repoPath, serial) {
+  const state = ciStateDir(repoPath);
+  const titles = path.join(state, 'session-titles');
+  const folders = [repoPath, ...(vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath)];
+  const own = new RegExp('^pr-' + serial + '(?![0-9])', 'i');
+  const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  let ids;
+  try { ids = await fs.promises.readdir(titles); } catch { return null; }
+  const homes = new Map();
+  for (const id of ids) {
+    if (!uuid.test(id) || !own.test(readCiState(titles, id) || '')) continue;
+    let runtime;
+    try { runtime = JSON.parse(readCiState(path.join(state, 'codex-runtimes'), id)); } catch { /* older association */ }
+    const recorded = runtime && typeof runtime.CODEX_HOME === 'string' && path.isAbsolute(runtime.CODEX_HOME);
+    const home = recorded ? runtime.CODEX_HOME : process.env.CODEX_HOME || path.join(process.env.HOME || '', '.codex');
+    if (!homes.has(home)) homes.set(home, new Map());
+    homes.get(home).set(id, recorded ? runtime : null);
+  }
+  let newest = null;
+  async function scan(dir, depth, candidates, home) {
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory() && depth < 3 && /^\d+$/.test(entry.name)) {
+        await scan(file, depth + 1, candidates, home);
+        continue;
+      }
+      const match = entry.name.match(/^rollout-.*-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.jsonl$/i);
+      if (!entry.isFile() || !match || !candidates.has(match[1])) continue;
+      let handle;
+      try {
+        handle = await fs.promises.open(file, 'r');
+        const buffer = Buffer.alloc(1024 * 1024);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        const end = buffer.subarray(0, bytesRead).indexOf(10);
+        if (end < 0) continue;
+        const first = JSON.parse(buffer.subarray(0, end).toString('utf8'));
+        const meta = first.payload;
+        if (first.type !== 'session_meta' || !meta || meta.id !== match[1]
+          || !['cli', 'vscode'].includes(meta.source) || !folders.includes(meta.cwd)) continue;
+        const { mtimeMs } = await handle.stat();
+        if (!newest || mtimeMs > newest.mtime) {
+          newest = { id: meta.id, cwd: meta.cwd, mtime: mtimeMs, file, home, runtime: candidates.get(meta.id) };
+        }
+      } catch { /* missing or malformed rollout */ }
+      finally { if (handle) await handle.close(); }
+    }
+  }
+  for (const [home, candidates] of homes) await scan(path.join(home, 'sessions'), 0, candidates, home);
+  return newest;
+}
+
+// A CLI can identify its session in its resume arguments or its open rollout.
+// App servers may hold many idle threads; they are not interactive terminals.
+function codexSessionPid(session) {
+  let pids;
+  try { pids = fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p)); } catch { return null; }
+  for (const pid of pids) {
+    try {
+      const args = fs.readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean);
+      if (!args.length || path.basename(args[0]) !== 'codex'
+        || args.some((arg) => ['app-server', 'exec', 'exec-server', 'fork'].includes(arg))) continue;
+      if (args.includes('resume') && args.includes(session.id)) return +pid;
+      for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) {
+        try { if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === session.file) return +pid; } catch { /* closed fd */ }
+      }
+    } catch { /* exited or inaccessible process */ }
+  }
+  return null;
+}
+
+const codexOpening = new Map();
+async function openCodex(repo) {
+  if (codexOpening.has(repo.repoPath)) return codexOpening.get(repo.repoPath);
+  const opening = (async () => {
+    const name = 'Codex ' + repo.name;
+    const own = vscode.window.terminals.find((t) => !t.exitStatus
+      && (t.name === name || (t.creationOptions && t.creationOptions.name === name)));
+    if (own) return own.show();
+    const session = await codexSessionForPr(repo.repoPath, repo.pr.serial);
+    const pid = session && codexSessionPid(session);
+    if (pid) {
+      const running = await terminalRunning(pid);
+      if (running) return running.show();
+      vscode.window.showInformationMessage(`The Codex session for ${repo.name} is already running outside this window's terminals (pid ${pid}).`);
+      return;
+    }
+    const runtime = session && session.runtime;
+    const preferred = runtime && typeof runtime.executable === 'string' && path.isAbsolute(runtime.executable) ? runtime.executable : null;
+    const executable = agentExecutable('codex', preferred);
+    if (!executable) throw new Error('the codex CLI is not on PATH or in ~/.local/bin');
+    const options = { name, cwd: session ? session.cwd : repo.repoPath,
+      shellPath: executable, shellArgs: session ? ['resume', session.id] : [] };
+    if (session) {
+      const sqliteHome = runtime ? runtime.CODEX_SQLITE_HOME : process.env.CODEX_SQLITE_HOME;
+      options.env = { CODEX_HOME: session.home,
+        CODEX_SQLITE_HOME: typeof sqliteHome === 'string' && path.isAbsolute(sqliteHome) ? sqliteHome : null };
+    }
+    vscode.window.createTerminal(options).show();
+  })();
+  codexOpening.set(repo.repoPath, opening);
+  try { return await opening; } finally { codexOpening.delete(repo.repoPath); }
 }
 
 function compareRepoPaths(a, b) {
@@ -1758,6 +1876,15 @@ class StatsViewProvider {
       } catch (error) {
         log('claude: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open Claude for ${repo.name}: ${error.message}`);
+      }
+    } else if (m.type === 'codex') {
+      const repo = this.data.get(m.repoPath);
+      if (!repo || !repo.pr) return;
+      try {
+        await openCodex(repo);
+      } catch (error) {
+        log('codex: ' + repo.name + ': ' + error.message);
+        vscode.window.showErrorMessage(`Could not open Codex for ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'open') {
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));

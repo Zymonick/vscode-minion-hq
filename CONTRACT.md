@@ -93,7 +93,7 @@ existing readiness read and refresh lifecycle.
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.
-Keep file and diff navigation, refresh, expansion, and Claude per PR controls.
+Keep file and diff navigation, refresh, expansion, and Claude and Codex per PR controls.
 Use the existing refresh lifecycle; do not add polling or background jobs for
 readiness.
 
@@ -121,6 +121,28 @@ PR's Claude session as the `claude` CLI in a VS Code terminal named
 sends no prompt and starts no CI run or agent work by itself. Clicking the
 control never toggles the row. Look sessions up on click, never during refresh,
 polling, or agent scans.
+
+## Codex per PR
+
+Every PR row also carries one Codex control, opening the interactive CLI in a
+VS Code terminal named `Codex pr-N`. Focus that terminal when it is running;
+otherwise resume the newest matching session with `codex resume <id>` in its
+original folder. Without a session, start `codex` in the PR worktree.
+
+Match the PR title in `.ci/session-titles` to an unarchived Codex rollout whose
+metadata confirms the session id, an interactive CLI or IDE source, and the PR
+worktree or a workspace folder. Claude associations, non-interactive runs,
+subagents, and other projects do not count. Use `.ci/codex-runtimes` when present
+to preserve the session's executable, `CODEX_HOME`, and `CODEX_SQLITE_HOME`;
+otherwise use the current Codex home and CLI. If a recorded executable is no
+longer available, use `codex` on PATH or in `~/.local/bin` with the same stores.
+
+A CLI identified by its resume id or open rollout is focused in this window's
+terminal, or reported with its pid when outside the window. Background app
+servers do not identify an interactive terminal. Concurrent clicks open only
+one terminal. Session lookup runs only on click and reads bounded rollout
+metadata. The CLI is the terminal's process; send no prompt, start no CI run,
+and never toggle the PR row when the control is clicked.
 
 ## Installation
 

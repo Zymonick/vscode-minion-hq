@@ -103,7 +103,7 @@ test('PR rows have separate Claude and Codex controls; Codex clicks do not toggl
     totals: { add: 0, del: 0 }, staged: [], unstaged: [], untracked: [], commits: [], pr });
   const quoted = '/tmp/a "quoted" & <odd>/pr-8';
   receive({ data: { type: 'data', repos: [row(f.workspace, null), row(f.repo, { status: 'landed' }), row(quoted, { status: 'wip' })] } });
-  const controls = [...root.innerHTML.matchAll(/<span class="codex" data-codex="([^"]*)" title="[^"]*">Codex<\/span>/g)];
+  const controls = [...root.innerHTML.matchAll(/<span class="codex" data-codex="([^"]*)" title="[^"]*"><svg[^>]*aria-label="Codex">.*?<\/svg><\/span>/g)];
   assert.deepEqual(controls.map((m) => m[1]), [f.repo, '/tmp/a &quot;quoted&quot; &amp; &lt;odd&gt;/pr-8']);
   assert.equal([...root.innerHTML.matchAll(/class="claude"/g)].length, 2);
   posted.length = 0;
@@ -130,7 +130,7 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   fs.renameSync(archived, path.join(f.home, '.codex', 'archived-' + path.basename(archived)));
   await f.click();
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Codex pr-7', cwd: f.repo,
-    shellPath: f.codex, shellArgs: ['resume', id(2)],
+    shellPath: f.codex, shellArgs: ['resume', '--no-daemon', id(2)],
     env: { CODEX_HOME: path.join(f.home, '.codex'), CODEX_SQLITE_HOME: null } }]);
   assert.deepEqual(f.shown, ['Codex pr-7']);
   assert.deepEqual(f.errors, []);
@@ -139,7 +139,7 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   f.session(12);
   await f.click();
   assert.equal(f.created[1].cwd, f.workspace);
-  assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', id(12)]);
+  assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', '--no-daemon', id(12)]);
 });
 
 test('desktop sessions retain their recorded executable, CODEX_HOME and SQLite store', async (t) => {
@@ -151,7 +151,7 @@ test('desktop sessions retain their recorded executable, CODEX_HOME and SQLite s
   f.session(2, { runtime, source: 'vscode' });
   await f.click();
   assert.equal(f.created[0].shellPath, executable);
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', id(2)]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', id(2)]);
   assert.deepEqual({ ...f.created[0].env }, { CODEX_HOME: runtime.CODEX_HOME, CODEX_SQLITE_HOME: runtime.CODEX_SQLITE_HOME });
 
   f.terminals.length = 0;
@@ -168,7 +168,7 @@ test('CODEX_HOME is honored for sessions without recorded runtimes', async (t) =
   f.env.CODEX_SQLITE_HOME = path.join(f.root, 'custom sqlite');
   f.session(1);
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', id(1)]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', id(1)]);
   assert.deepEqual({ ...f.created[0].env }, { CODEX_HOME: f.env.CODEX_HOME, CODEX_SQLITE_HOME: f.env.CODEX_SQLITE_HOME });
 });
 
@@ -176,7 +176,7 @@ test('without a session, Codex starts in the PR worktree with no prompt; repeate
   const f = fixture(t);
   f.session(1, { cwd: null });
   await Promise.all([f.click(), f.click()]);
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Codex pr-7', cwd: f.repo, shellPath: f.codex, shellArgs: [] }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Codex pr-7', cwd: f.repo, shellPath: f.codex, shellArgs: ['--no-daemon'] }]);
   const own = f.terminals[0];
   own.name = 'Renamed terminal';
   await f.click();
@@ -200,7 +200,7 @@ test('a Codex CLI already resuming this session is focused or reported outside t
   assert.deepEqual(f.infos, ["The Codex session for pr-7 is already running outside this window's terminals (pid 42)."]);
   f.processes.clear();
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', id(1)]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', id(1)]);
 });
 
 test('an open Codex rollout identifies a CLI session, while app servers and unrelated processes do not', async (t) => {

@@ -83,12 +83,13 @@ PR work. Do not render a second check-result indicator. Landed and running CI
 states take precedence and use their own tooltip, without superseded readiness
 or check details. A stored green test file alone never means ready.
 
-An optional `display_label` from CI replaces the visible marker text, while
-its colour and tooltip retain the calculated readiness, checks, review and
-next actions. Render custom text as escaped plain text. Reports without that
-field keep the calculated status text. Landed and running CI states override
-custom labels. Setting and clearing labels uses CI in the terminal; reuse the
-existing readiness read and refresh lifecycle.
+An optional `display_label` from CI appears as a separate neutral label before
+the task status marker. Render custom text as escaped plain text, with its own
+tooltip. The task marker retains its calculated text, colour, checks, review
+and next actions. Landed and running CI states affect only the task marker;
+the custom label remains while supplied by CI. Missing or empty labels add
+no marker. `ci label TARGET TEXT` sets the label in the terminal; omitting
+`TEXT` clears it. Reuse the existing readiness read and refresh lifecycle.
 
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
@@ -124,10 +125,13 @@ polling, or agent scans.
 
 ## Codex per PR
 
-Every PR row also carries one Codex control, opening the interactive CLI in a
-VS Code terminal named `Codex pr-N`. Focus that terminal when it is running;
-otherwise resume the newest matching session with `codex resume <id>` in its
-original folder. Without a session, start `codex` in the PR worktree.
+Every PR row also carries one small Codex terminal icon with a Codex tooltip,
+opening the interactive CLI in a VS Code terminal named `Codex pr-N`. Focus
+that terminal when it is running;
+otherwise resume the newest matching session with `codex resume --no-daemon <id>`
+in its original folder. Without a session, start `codex --no-daemon` in the PR
+worktree. Launch without the shared background server so conflicting feature
+settings cannot request a restart or change settings for other clients.
 
 Match the PR title in `.ci/session-titles` to an unarchived Codex rollout whose
 metadata confirms the session id, an interactive CLI or IDE source, and the PR

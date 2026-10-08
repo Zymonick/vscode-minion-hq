@@ -132,6 +132,7 @@ test('testing overrides obsolete readiness labels', async (t) => {
   assert.equal(result.ci.state, 'testing');
   assert.equal(result.pr.status, 'testing');
   assert.equal(result.pr.statusLabel, undefined);
+  assert.equal(result.pr.customLabel, 'Manual label');
 });
 
 test('rendered rows show one task marker with check, review and action details', (t) => {
@@ -171,7 +172,7 @@ test('rendered rows show one task marker with check, review and action details',
 });
 
 
-test('manual labels render as escaped text while retaining readiness and its actions', async (t) => {
+test('manual labels render separately before readiness and retain its actions', async (t) => {
   const f = fixture(t);
   const root = { innerHTML: '' };
   let receive;
@@ -186,19 +187,43 @@ test('manual labels render as escaped text while retaining readiness and its act
     f.report.status = status;
     f.report.issues = status === 'ready to land' ? [] : [issue(status, 'Concrete reason', 'Concrete next action')];
     const ci = await f.collect();
-    assert.equal(ci.statusLabel, f.report.display_label);
+    assert.equal(ci.statusLabel, status);
+    assert.equal(ci.customLabel, f.report.display_label);
     assert.equal(ci.state, status.split(':')[0].replaceAll(' ', '-'));
-    assert.ok(ci.reason.includes('CI status: ' + status));
     const pr = await f.collectPr(f.repo, 'master', new Set(), ci);
     receive({ data: { type: 'data', repos: [{
       repoPath: f.repo, name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
       staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
     }] } });
-    assert.ok(root.innerHTML.includes('[Prüfung &lt;tomorrow&gt; &amp; &quot;later&quot;]'));
+    const custom = '[Prüfung &lt;tomorrow&gt; &amp; &quot;later&quot;]';
+    assert.ok(root.innerHTML.includes(custom));
+    assert.ok(root.innerHTML.includes('[' + status + ']'));
+    assert.ok(root.innerHTML.indexOf(custom) < root.innerHTML.indexOf('[' + status + ']'));
+    assert.equal([...root.innerHTML.matchAll(/<span class="pr-custom-label"/g)].length, 1);
     assert.equal([...root.innerHTML.matchAll(/<span class="prst /g)].length, 1);
-    assert.ok(root.innerHTML.includes('CI status: ' + status));
     assert.ok(root.innerHTML.includes(status === 'ready to land' ? f.report.next : 'Concrete next action'));
   }
+  for (const status of ['testing', 'landed']) {
+    const ci = await f.collect();
+    const pr = await f.collectPr(f.repo, 'master', new Set([7]), ci);
+    pr.status = status;
+    receive({ data: { type: 'data', repos: [{
+      repoPath: f.repo, name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
+      staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
+    }] } });
+    assert.match(root.innerHTML, /\[Prüfung &lt;tomorrow&gt; &amp; &quot;later&quot;\]<\/span><span class="prst /);
+    assert.ok(root.innerHTML.includes('[' + status + ']'));
+    const tooltip = root.innerHTML.match(/<span class="prst [^"]+" title="([^"]*)">/)[1];
+    assert.doesNotMatch(tooltip, /Concrete next action|checks passed|agent sign-off current/);
+  }
   f.report.display_label = '';
-  assert.equal((await f.collect()).statusLabel, f.report.status);
+  const ci = await f.collect();
+  assert.equal(ci.statusLabel, f.report.status);
+  const pr = await f.collectPr(f.repo, 'master', new Set(), ci);
+  receive({ data: { type: 'data', repos: [{
+    repoPath: f.repo, name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
+    staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
+  }] } });
+  assert.doesNotMatch(root.innerHTML, /<span class="pr-custom-label"/);
+  assert.ok(root.innerHTML.includes('[' + f.report.status + ']'));
 });

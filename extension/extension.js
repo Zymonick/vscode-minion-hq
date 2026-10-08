@@ -458,7 +458,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (readiness) { status = readiness.state; statusLabel = readiness.statusLabel; }
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
-    statusLabel } : null;
+    statusLabel, customLabel: readiness && readiness.customLabel } : null;
 }
 
 // Import only the landed CI's read-only report. Never execute a worktree's CI
@@ -526,13 +526,10 @@ async function collectCi(repoPath, branch) {
     if (!details.length) {
       details.push(report.next);
     }
-    if (report.display_label) {
-      details.unshift('Custom label: ' + report.display_label, 'CI status: ' + report.status);
-    }
     details.push(...report.operator_steps.map((step) => 'Operator after landing: ' + step));
     return {
       serial, state: report.status.split(':')[0].split(' (')[0].replace(/ /g, '-'),
-      statusLabel: report.display_label || report.status, reason: details.join('\n'),
+      statusLabel: report.status, customLabel: report.display_label || '', reason: details.join('\n'),
       checkLabel: report.checks, reviewLabel: report.review,
     };
   } catch (error) {
@@ -1084,9 +1081,10 @@ function getHtml(nonce) {
            animation: agentpulse 2s ease-in-out infinite; }
   @keyframes agentpulse { 50% { opacity: .4; } }
   .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
-  .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; font-size: .85em; flex: none; opacity: .75; }
+  .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .claude:hover, .codex:hover { opacity: 1; }
-  .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
+  .prst, .pr-custom-label { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
+  .pr-custom-label { color: var(--vscode-descriptionForeground); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
   .prst-blocked, .prst-checks-outdated, .prst-checks-missing, .prst-agent-sign-off-missing,
@@ -1133,7 +1131,10 @@ function prTag(pr, ci) {
   const reason = pr.status === 'landed' || pr.status === 'testing'
     ? PR_STATUS_TIP[pr.status]
     : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel, ci?.reviewLabel].filter(Boolean).join('\\n');
-  return '<span class="prst prst-' + esc(pr.status) + '" title="'
+  const custom = pr.customLabel
+    ? '<span class="pr-custom-label" title="Custom label: ' + esc(pr.customLabel) + '">[' + esc(pr.customLabel) + ']</span>'
+    : '';
+  return custom + '<span class="prst prst-' + esc(pr.status) + '" title="'
     + esc(reason) + '">[' + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
@@ -1273,7 +1274,9 @@ function render() {
     const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
       + esc('Claude: open the terminal for ' + r.name + ', resuming its session or starting one') + '">✻</span>' : '';
     const codexHtml = r.pr ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
-      + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one') + '">Codex</span>' : '';
+      + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
+      + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Codex">'
+      + '<path d="m3 4 4 4-4 4m6 0h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1702,7 +1705,7 @@ async function openCodex(repo) {
     const executable = agentExecutable('codex', preferred);
     if (!executable) throw new Error('the codex CLI is not on PATH or in ~/.local/bin');
     const options = { name, cwd: session ? session.cwd : repo.repoPath,
-      shellPath: executable, shellArgs: session ? ['resume', session.id] : [] };
+      shellPath: executable, shellArgs: session ? ['resume', '--no-daemon', session.id] : ['--no-daemon'] };
     if (session) {
       const sqliteHome = runtime ? runtime.CODEX_SQLITE_HOME : process.env.CODEX_SQLITE_HOME;
       options.env = { CODEX_HOME: session.home,

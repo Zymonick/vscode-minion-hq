@@ -83,6 +83,13 @@ PR work. Do not render a second check-result indicator. Landed and running CI
 states take precedence and use their own tooltip, without superseded readiness
 or check details. A stored green test file alone never means ready.
 
+An optional `display_label` from CI replaces the visible marker text, while
+its colour and tooltip retain the calculated readiness, checks, review and
+next actions. Render custom text as escaped plain text. Reports without that
+field keep the calculated status text. Landed and running CI states override
+custom labels. Setting and clearing labels uses CI in the terminal; reuse the
+existing readiness read and refresh lifecycle.
+
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.

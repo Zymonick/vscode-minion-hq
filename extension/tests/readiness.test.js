@@ -117,7 +117,8 @@ test('unavailable, timed out and malformed reports cannot imply readiness', asyn
     assert.match(result.reason, /Agent: inspect CI status/);
   }
   f.fail(null);
-  for (const raw of ['{', 'null', '[]', '{}', JSON.stringify({ ...f.report, issues: [null] })]) {
+  for (const raw of ['{', 'null', '[]', '{}', JSON.stringify({ ...f.report, issues: [null] }),
+    JSON.stringify({ ...f.report, display_label: { text: 'Invalid' } })]) {
     f.raw(raw);
     assert.equal((await f.collect()).state, 'status-unavailable');
   }
@@ -126,6 +127,7 @@ test('unavailable, timed out and malformed reports cannot imply readiness', asyn
 test('testing overrides obsolete readiness labels', async (t) => {
   const f = fixture(t);
   f.report.status = 'agent sign-off missing';
+  f.report.display_label = 'Manual label';
   const result = await f.collectRepo(f.repo, new Set([7]));
   assert.equal(result.ci.state, 'testing');
   assert.equal(result.pr.status, 'testing');
@@ -166,4 +168,37 @@ test('rendered rows show one task marker with check, review and action details',
     }
     assert.doesNotMatch(root.innerHTML, /<button\b|<input\b/);
   }
+});
+
+
+test('manual labels render as escaped text while retaining readiness and its actions', async (t) => {
+  const f = fixture(t);
+  const root = { innerHTML: '' };
+  let receive;
+  const script = f.getHtml('N').match(/<script nonce="N">([^]*)<\/script>/)[1];
+  vm.runInNewContext(script, {
+    acquireVsCodeApi: () => ({ getState: () => ({}), postMessage() {} }),
+    document: { getElementById: () => root, addEventListener() {} },
+    window: { addEventListener: (_, handler) => { receive = handler; } },
+  });
+  f.report.display_label = 'Prüfung <tomorrow> & "later"';
+  for (const status of ['ready to land', 'checks failed', 'blocked: awaiting input']) {
+    f.report.status = status;
+    f.report.issues = status === 'ready to land' ? [] : [issue(status, 'Concrete reason', 'Concrete next action')];
+    const ci = await f.collect();
+    assert.equal(ci.statusLabel, f.report.display_label);
+    assert.equal(ci.state, status.split(':')[0].replaceAll(' ', '-'));
+    assert.ok(ci.reason.includes('CI status: ' + status));
+    const pr = await f.collectPr(f.repo, 'master', new Set(), ci);
+    receive({ data: { type: 'data', repos: [{
+      repoPath: f.repo, name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
+      staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
+    }] } });
+    assert.ok(root.innerHTML.includes('[Prüfung &lt;tomorrow&gt; &amp; &quot;later&quot;]'));
+    assert.equal([...root.innerHTML.matchAll(/<span class="prst /g)].length, 1);
+    assert.ok(root.innerHTML.includes('CI status: ' + status));
+    assert.ok(root.innerHTML.includes(status === 'ready to land' ? f.report.next : 'Concrete next action'));
+  }
+  f.report.display_label = '';
+  assert.equal((await f.collect()).statusLabel, f.report.status);
 });

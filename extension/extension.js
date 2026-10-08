@@ -486,6 +486,7 @@ function validCiReport(report) {
     && ['status', 'checks', 'review', 'next'].every((key) => typeof report[key] === 'string' && report[key])
     && Array.isArray(report.issues) && report.issues.every((issue) => issue && typeof issue === 'object'
       && ['status', 'detail', 'owner', 'action'].every((key) => typeof issue[key] === 'string' && issue[key]))
+    && (report.display_label === undefined || typeof report.display_label === 'string')
     && Array.isArray(report.operator_steps) && report.operator_steps.every((step) => typeof step === 'string' && step);
 }
 
@@ -525,10 +526,13 @@ async function collectCi(repoPath, branch) {
     if (!details.length) {
       details.push(report.next);
     }
+    if (report.display_label) {
+      details.unshift('Custom label: ' + report.display_label, 'CI status: ' + report.status);
+    }
     details.push(...report.operator_steps.map((step) => 'Operator after landing: ' + step));
     return {
       serial, state: report.status.split(':')[0].split(' (')[0].replace(/ /g, '-'),
-      statusLabel: report.status, reason: details.join('\n'),
+      statusLabel: report.display_label || report.status, reason: details.join('\n'),
       checkLabel: report.checks, reviewLabel: report.review,
     };
   } catch (error) {

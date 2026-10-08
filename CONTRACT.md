@@ -93,8 +93,23 @@ existing readiness read and refresh lifecycle.
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.
-Keep file and diff navigation, refresh, and expansion controls. Use the existing
-refresh lifecycle; do not add polling or background jobs for readiness.
+Keep file and diff navigation, refresh, expansion, and Claude per PR controls.
+Use the existing refresh lifecycle; do not add polling or background jobs for
+readiness.
+
+## Claude per PR
+
+Every PR row carries one Claude control; other rows have none. It opens the
+PR's newest Claude session: an id in `.ci/session-titles` whose title
+`scripts/rename-session` began with that `pr-N`, with a transcript in the
+Claude project directory of one of the window's workspace folders. Codex
+threads in the same registry and sessions of other projects do not count.
+Without such a session, it opens a new Claude Code session whose input holds the
+PR's prompt: serial, label, worktree path, CI status and, unless landed or
+testing, the readiness details. The prompt is never sent automatically, and the
+control starts no CI run or agent work by itself. Clicking it never toggles the
+row. Look sessions up on click, never during refresh, polling, or agent
+scans.
 
 ## Installation
 

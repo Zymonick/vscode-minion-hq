@@ -1083,6 +1083,8 @@ function getHtml(nonce) {
   .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em; flex: none;
            animation: agentpulse 2s ease-in-out infinite; }
   @keyframes agentpulse { 50% { opacity: .4; } }
+  .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
+  .claude:hover { opacity: 1; }
   .prst { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
@@ -1266,6 +1268,9 @@ function render() {
       agentHtml = '<span class="agent" title="agent session(s) working in this worktree: '
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
+    // Every PR carries a Claude prompt: its own Claude session, or a new one holding the PR's prompt.
+    const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
+      + esc('Claude: open the session for ' + r.name + ', or start one with its prompt (not sent)') + '">✻</span>' : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1277,7 +1282,7 @@ function render() {
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
-      btns: agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
+      btns: claudeHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
     const sections = [
@@ -1336,6 +1341,11 @@ function render() {
 }
 
 document.addEventListener('click', (ev) => {
+  const claude = ev.target.closest('.claude');
+  if (claude) {
+    vscode.postMessage({ type: 'claude', repoPath: claude.dataset.claude });
+    return;
+  }
   const el = ev.target.closest('.row');
   if (!el || !el.dataset.act) return;
   const act = el.dataset.act;
@@ -1489,6 +1499,45 @@ function scanAgents(repoPaths) {
     if (repo) (map[repo] = map[repo] || []).push({ pid: c.pid, kind: c.kind, name });
   }
   return map;
+}
+
+// ── Claude per PR ───────────────────────────────────────────────────────────
+// Every PR row carries a Claude prompt. scripts/rename-session records each
+// agent session's PR title in .ci/session-titles/<id>; Codex threads share that
+// directory, so only ids with a Claude transcript count. Claude Code in this
+// window resumes sessions of its workspace folders, so only their project
+// directories are searched. Looked up on click, never during a refresh.
+function claudeSessionForPr(repoPath, serial) {
+  const titles = path.join(ciStateDir(repoPath), 'session-titles');
+  const projects = path.join(process.env.HOME || '', '.claude', 'projects');
+  const dirs = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath.replace(/[^a-zA-Z0-9]/g, '-'));
+  const own = new RegExp('^pr-' + serial + '(?![0-9])', 'i');
+  let ids;
+  try { ids = fs.readdirSync(titles); } catch { return null; }
+  let newest = null;
+  for (const id of ids) {
+    if (!own.test(readCiState(titles, id) || '')) continue;
+    for (const dir of dirs) {
+      let mtime;
+      try { mtime = fs.statSync(path.join(projects, dir, id + '.jsonl')).mtimeMs; } catch { continue; }
+      if (!newest || mtime > newest.mtime) newest = { id, mtime };
+    }
+  }
+  return newest && newest.id;
+}
+
+// A new session's prompt, left unsent: the PR, its worktree and what CI says is
+// next. Sending it lets scripts/rename-session attach the session to the PR by
+// the worktree path, so the row reopens that session afterwards.
+function claudePrompt(repo) {
+  const pr = repo.pr;
+  const lines = ['Continue PR ' + pr.serial + (pr.label ? ' (' + pr.label + ')' : '') + ' in ' + repo.repoPath + '.'];
+  if (pr.status) lines.push('CI status: ' + pr.status.replace(/-/g, ' '));
+  // Landed and running CI states supersede the readiness details, as in the marker's tooltip.
+  if (pr.reason && pr.status !== 'landed' && pr.status !== 'testing') {
+    lines.push(...pr.reason.split('\n').filter((line) => !line.startsWith('CI status: ')));
+  }
+  return lines.join('\n');
 }
 
 function compareRepoPaths(a, b) {
@@ -1645,6 +1694,18 @@ class StatsViewProvider {
       const letters = parseNameStatus(nsOut);
       const files = parseNumstat(numOut).map((f) => ({ ...f, letter: letters[f.path] || 'M' }));
       if (this.view) this.view.webview.postMessage({ type: 'commitFiles', repoPath: m.repoPath, hash: m.hash, files });
+    } else if (m.type === 'claude') {
+      const repo = this.data.get(m.repoPath);
+      if (!repo || !repo.pr) return;
+      const session = claudeSessionForPr(repo.repoPath, repo.pr.serial);
+      try {
+        // Claude Code reveals or resumes a session by id, or opens a new one with the prompt in its input.
+        await vscode.commands.executeCommand('claude-vscode.editor.open',
+          session || undefined, session ? undefined : claudePrompt(repo));
+      } catch (error) {
+        log('claude: ' + repo.name + ': ' + error.message);
+        vscode.window.showErrorMessage(`Could not open Claude for ${repo.name}: ${error.message}`);
+      }
     } else if (m.type === 'open') {
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));
       const base = path.basename(m.path);

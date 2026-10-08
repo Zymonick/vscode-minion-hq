@@ -1,6 +1,6 @@
 # Minion HQ
 
-A status and diff view for your worktrees in VS Code. Open **Minion HQ** from the Activity Bar to see changes, test status, and running agents. Run CI and Git actions in the terminal; the panel has no steering buttons.
+A status and diff view for your worktrees in VS Code. Open **Minion HQ** from the Activity Bar to see changes, test status, and running agents. Run CI and Git actions in the terminal; apart from each PR's Claude control, the panel has no steering buttons.
 
 For every repository / git worktree open in the workspace:
 
@@ -12,6 +12,7 @@ For every repository / git worktree open in the workspace:
 - **PR identity** — a `pr-N` row shows its three-word summary, prefixed with `#<case> - ` when a case is associated. Identity and readiness are read directly from CI state without command settings.
 - **PR readiness** — each PR shows the status reported by Kylie CI, including missing agent sign-off, outdated review, failed or outdated checks, WIP, blocked, ready to land, testing, and landed. Its tooltip contains check results, review details, and the responsible person’s next action. A passing test alone does not mean the PR is ready to land.
 - **Custom PR label** — use `ci status 615 --label "Waiting for Simon"` (replace `615` with your PR), then refresh Minion HQ. `ci status 615 --clear-label` restores the calculated status text. The label does not change readiness or landing; hover for the underlying CI status and actions. This requires the Kylie CI custom-label update.
+- **Claude per PR** — every PR row has a `✻` Claude control. Clicking it opens the PR's Claude session: the newest one `scripts/rename-session` titled `pr-N` in this workspace. Without one, it opens a new Claude Code tab whose input holds the PR's prompt (PR, worktree, CI status and next actions); nothing is sent until you press Enter. Sending that prompt titles the session for the PR, so later clicks return to it. Codex threads are not opened. Requires the Claude Code extension.
 - **Commits** — outgoing commits when an upstream exists, otherwise the most recent ones, each with `+x −y` vs its parent. Expanding a commit lazy-loads its files; clicking opens the parent ↔ commit diff for that file.
 - Visible files open independently of VS Code's Git repository discovery and panel refresh. Revision sides are read-only Git snapshots from the selected worktree; working files remain editable. Missing sides of added or deleted files are empty. Failed reads show an error instead of silently opening a different view.
 - **Excluded worktrees** — `scmDiffStats.excludePaths` drops rows for checkouts that are nobody's work (an agent tool's scratch clones, a CI verify worktree). Patterns match the worktree's absolute path and its folder name, `*` inside one path segment and `**` across them; a pattern without a wildcard also excludes everything under it.

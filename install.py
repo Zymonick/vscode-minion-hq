@@ -57,7 +57,7 @@ def verify(registry, extensions, package, version):
     for item in package.infolist():
         if not item.filename.startswith('extension/') or item.is_dir():
             continue
-        relative = item.filename.removeprefix('extension/')
+        relative = item.filename[len('extension/'):]
         expected = package.read(item)
         actual = (installed / relative).read_bytes()
         if relative == 'package.json':

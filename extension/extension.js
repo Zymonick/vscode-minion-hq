@@ -1725,13 +1725,13 @@ async function openCodex(repo) {
     const preferred = runtime && typeof runtime.executable === 'string' && path.isAbsolute(runtime.executable) ? runtime.executable : null;
     const executable = agentExecutable('codex', preferred);
     if (!executable) throw new Error('the codex CLI is not on PATH or in ~/.local/bin');
-    // A fixed VS Code terminal name disables the CLI's live title updates.
-    const titleArgs = ['-c', 'tui.terminal_title=["app-name","status","thread","project"]'];
-    const options = { cwd: session ? session.cwd : repo.repoPath,
+    // Session titles and the original cwd can omit the PR. Keep its number
+    // first in the tab, including when resuming a session from Kylie.
+    const options = { name: `pr-${repo.pr.serial} · Codex`, cwd: session ? session.cwd : repo.repoPath,
       env: { MINION_HQ_CODEX_PR: repo.repoPath },
       shellPath: executable, shellArgs: session
-        ? ['resume', '--remote', 'unix://', '--approve-for-me', ...titleArgs, session.id]
-        : ['--remote', 'unix://', '--approve-for-me', ...titleArgs] };
+        ? ['resume', '--remote', 'unix://', '--approve-for-me', session.id]
+        : ['--remote', 'unix://', '--approve-for-me'] };
     if (session) {
       const sqliteHome = runtime ? runtime.CODEX_SQLITE_HOME : process.env.CODEX_SQLITE_HOME;
       Object.assign(options.env, { CODEX_HOME: session.home,

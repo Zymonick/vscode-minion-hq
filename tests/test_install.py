@@ -61,7 +61,7 @@ class InstallTests(unittest.TestCase):
         installed.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(self.vsix) as package:
             for item in package.infolist():
-                (installed / item.filename.removeprefix('extension/')).write_bytes(package.read(item))
+                (installed / item.filename[len('extension/'):]).write_bytes(package.read(item))
         manifest = {**self.manifest, '__metadata': {'installedTimestamp': 1234}}
         (installed / 'package.json').write_text(json.dumps(manifest))
 

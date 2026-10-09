@@ -1590,8 +1590,11 @@ function agentExecutable(command, preferred) {
 // session already running elsewhere is never resumed a second time.
 async function openClaude(repo) {
   const name = 'Claude ' + repo.name;
-  const own = vscode.window.terminals.find((t) => !t.exitStatus
-    && (t.name === name || (t.creationOptions && t.creationOptions.name === name)));
+  const own = vscode.window.terminals.find((t) => {
+    if (t.exitStatus) return false;
+    const owner = t.creationOptions?.env?.MINION_HQ_CLAUDE_PR;
+    return owner ? owner === repo.repoPath : t.name === name || t.creationOptions?.name === name;
+  });
   if (own) return own.show();
   const session = claudeSessionForPr(repo.repoPath, repo.pr.serial);
   const pid = session && claudeSessionPid(session.id);
@@ -1603,8 +1606,10 @@ async function openClaude(repo) {
   }
   const claude = agentExecutable('claude');
   if (!claude) throw new Error('the claude CLI is not on PATH or in ~/.local/bin');
+  // A fixed VS Code terminal name hides Claude's live title, whose ◐/◑ prefix
+  // marks a working session and ✳ one that is idle or waiting for input.
   vscode.window.createTerminal({
-    name, cwd: session ? session.cwd : repo.repoPath,
+    cwd: session ? session.cwd : repo.repoPath, env: { MINION_HQ_CLAUDE_PR: repo.repoPath },
     shellPath: claude, shellArgs: session ? ['--resume', session.id] : [],
   }).show();
 }
@@ -1684,6 +1689,21 @@ function codexSessionPid(session) {
   return null;
 }
 
+// Attach every terminal to the same server used by the desktop app. Starting
+// the daemon is idempotent and does not restart an existing server.
+async function prepareCodexServer(executable, options) {
+  const env = { ...process.env, ...options.env };
+  for (const key of Object.keys(env)) if (env[key] === null) delete env[key];
+  await new Promise((resolve, reject) => {
+    cp.execFile(executable, ['app-server', 'daemon', 'start'], {
+      cwd: options.cwd, env, timeout: 15000, maxBuffer: 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      if (error) return reject(new Error(String(stderr || error.message).trim()));
+      resolve();
+    });
+  });
+}
+
 const codexOpening = new Map();
 async function openCodex(repo) {
   if (codexOpening.has(repo.repoPath)) return codexOpening.get(repo.repoPath);
@@ -1700,8 +1720,6 @@ async function openCodex(repo) {
     if (pid) {
       const running = await terminalRunning(pid);
       if (running) return running.show();
-      vscode.window.showInformationMessage(`The Codex session for ${repo.name} is already running outside this window's terminals (pid ${pid}).`);
-      return;
     }
     const runtime = session && session.runtime;
     const preferred = runtime && typeof runtime.executable === 'string' && path.isAbsolute(runtime.executable) ? runtime.executable : null;
@@ -1712,13 +1730,14 @@ async function openCodex(repo) {
     const options = { cwd: session ? session.cwd : repo.repoPath,
       env: { MINION_HQ_CODEX_PR: repo.repoPath },
       shellPath: executable, shellArgs: session
-        ? ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, session.id]
-        : ['--no-daemon', '--approve-for-me', ...titleArgs] };
+        ? ['resume', '--remote', 'unix://', '--approve-for-me', ...titleArgs, session.id]
+        : ['--remote', 'unix://', '--approve-for-me', ...titleArgs] };
     if (session) {
       const sqliteHome = runtime ? runtime.CODEX_SQLITE_HOME : process.env.CODEX_SQLITE_HOME;
       Object.assign(options.env, { CODEX_HOME: session.home,
         CODEX_SQLITE_HOME: typeof sqliteHome === 'string' && path.isAbsolute(sqliteHome) ? sqliteHome : null });
     }
+    await prepareCodexServer(executable, options);
     vscode.window.createTerminal(options).show();
   })();
   codexOpening.set(repo.repoPath, opening);

@@ -44,13 +44,15 @@ function fixture(t) {
 
   const created = [], shown = [], infos = [], errors = [];
   const terminal = (name, pid, exitStatus) => ({ name, exitStatus, creationOptions: { name },
-    processId: Promise.resolve(pid), show() { shown.push(name + (pid ? ' @' + pid : '')); } });
+    processId: Promise.resolve(pid), show() { shown.push(this.name + (pid ? ' @' + pid : '')); } });
   const vscode = {
     window: {
       terminals: [],
       createTerminal: (options) => {
         created.push(options);
-        return terminal(options.name);
+        const value = terminal(options.name || 'claude');
+        value.creationOptions = options;
+        return value;
       },
       createOutputChannel: () => ({ appendLine() {} }),
       showInformationMessage: async (message) => { infos.push(message); },
@@ -110,9 +112,9 @@ test("a PR's newest Claude session resumes in a terminal, in the folder it start
   f.session('66666666-6666-4666-8666-666666666666', null); // a transcript the registry never titled
   f.terminals.push(f.terminal('Claude pr-70', 0), f.terminal('Claude pr-7', 0, { code: 0 }));
   await f.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Claude pr-7', cwd: f.repo, shellPath: f.claude,
-    shellArgs: ['--resume', '22222222-2222-4222-8222-222222222222'] }]);
-  assert.deepEqual(f.shown, ['Claude pr-7']);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, env: { MINION_HQ_CLAUDE_PR: f.repo },
+    shellPath: f.claude, shellArgs: ['--resume', '22222222-2222-4222-8222-222222222222'] }]);
+  assert.deepEqual(f.shown, ['claude']);
 
   f.created.length = 0;
   f.session('77777777-7777-4777-8777-777777777777', 'pr-7: clear review status');
@@ -126,7 +128,28 @@ test('without a Claude session, a new one starts in the worktree with nothing se
   const f = fixture(t);
   f.session('55555555-5555-7555-8555-555555555555', 'pr-7: codex thread without a Claude transcript', null);
   await f.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'Claude pr-7', cwd: f.repo, shellPath: f.claude, shellArgs: [] }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, env: { MINION_HQ_CLAUDE_PR: f.repo },
+    shellPath: f.claude, shellArgs: [] }]);
+});
+
+test("new Claude terminals keep Claude's live title and stay attached to their PR", async (t) => {
+  const f = fixture(t);
+  await f.click();
+  const own = f.created[0];
+  assert.equal(Object.hasOwn(own, 'name'), false, 'a fixed name would hide the working/idle title');
+  const other = f.terminal('Claude pr-7', 42);
+  other.creationOptions = { env: { MINION_HQ_CLAUDE_PR: '/another/pr-8' } };
+  const live = f.terminal('\u25D0 pr-7: clear review status', 43);
+  live.creationOptions = own;
+  f.terminals.push(other, live);
+  await f.click();
+  live.name = '\u2733 pr-7: clear review status';
+  await f.click();
+  assert.equal(f.created.length, 1);
+  assert.deepEqual(f.shown, ['claude', '\u25D0 pr-7: clear review status @43', '\u2733 pr-7: clear review status @43']);
+  live.exitStatus = { code: 0 };
+  await f.click();
+  assert.equal(f.created.length, 2, 'an exited terminal can be reopened');
 });
 
 test("the PR's open Claude terminal is focused instead of starting another", async (t) => {

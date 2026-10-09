@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
 const id = (n) => '11111111-1111-7111-8111-' + String(n).padStart(12, '0');
 const titleArgs = ['-c', 'tui.terminal_title=["app-name","status","thread","project"]'];
+const connectionArgs = ['--remote', 'unix://', '--approve-for-me', ...titleArgs];
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-codex-'));
@@ -61,7 +62,15 @@ function fixture(t) {
       return match ? processes.get(+match[1]).fds[match[2]] : fs.readlinkSync(file, ...args);
     },
   };
-  const created = [], shown = [], infos = [], errors = [], terminals = [];
+  const created = [], shown = [], infos = [], errors = [], terminals = [], serverStarts = [];
+  let serverError = null;
+  const childProcess = { ...require('node:child_process'),
+    execFile(executable, args, options, callback) {
+      assert.deepEqual(Array.from(args), ['app-server', 'daemon', 'start']);
+      serverStarts.push({ executable, options });
+      callback(serverError, '', serverError ? serverError.message : '');
+    },
+  };
   const terminal = (name, pid, exitStatus) => ({ name, exitStatus, creationOptions: { name },
     processId: Promise.resolve(pid), show() { shown.push(this.name); } });
   const vscode = {
@@ -83,12 +92,13 @@ function fixture(t) {
   const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout,
     process: Object.assign(Object.create(process), { env }),
-    require: (name) => name === 'vscode' ? vscode : name === 'fs' ? procFs : require(name),
+    require: (name) => name === 'vscode' ? vscode : name === 'fs' ? procFs : name === 'child_process' ? childProcess : require(name),
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
   return { ...api, provider, root, repo, workspace, state, home, codex, env, session, terminal, processes,
-    terminals, created, shown, infos, errors, click: () => provider.onMessage({ type: 'codex', repoPath: repo }) };
+    terminals, created, shown, infos, errors, serverStarts, failServer: (error) => { serverError = error; },
+    click: () => provider.onMessage({ type: 'codex', repoPath: repo }) };
 }
 
 test('PR rows have separate Claude and Codex controls; Codex clicks do not toggle the row', (t) => {
@@ -131,7 +141,7 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   fs.renameSync(archived, path.join(f.home, '.codex', 'archived-' + path.basename(archived)));
   await f.click();
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo,
-    shellPath: f.codex, shellArgs: ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(2)],
+    shellPath: f.codex, shellArgs: ['resume', ...connectionArgs, id(2)],
     env: { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: path.join(f.home, '.codex'), CODEX_SQLITE_HOME: null } }]);
   assert.deepEqual(f.shown, ['codex']);
   assert.deepEqual(f.errors, []);
@@ -140,7 +150,7 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   f.session(12);
   await f.click();
   assert.equal(f.created[1].cwd, f.workspace);
-  assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(12)]);
+  assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', ...connectionArgs, id(12)]);
 });
 
 test('desktop sessions retain their recorded executable, CODEX_HOME and SQLite store', async (t) => {
@@ -152,7 +162,7 @@ test('desktop sessions retain their recorded executable, CODEX_HOME and SQLite s
   f.session(2, { runtime, source: 'vscode' });
   await f.click();
   assert.equal(f.created[0].shellPath, executable);
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(2)]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', ...connectionArgs, id(2)]);
   assert.deepEqual({ ...f.created[0].env }, { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: runtime.CODEX_HOME, CODEX_SQLITE_HOME: runtime.CODEX_SQLITE_HOME });
 
   f.terminals.length = 0;
@@ -169,7 +179,7 @@ test('CODEX_HOME is honored for sessions without recorded runtimes', async (t) =
   f.env.CODEX_SQLITE_HOME = path.join(f.root, 'custom sqlite');
   f.session(1);
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(1)]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', ...connectionArgs, id(1)]);
   assert.deepEqual({ ...f.created[0].env }, { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: f.env.CODEX_HOME, CODEX_SQLITE_HOME: f.env.CODEX_SQLITE_HOME });
 });
 
@@ -178,7 +188,7 @@ test('new Codex terminals accept live titles and remain attached to their PR aft
   f.session(1, { cwd: null });
   await Promise.all([f.click(), f.click()]);
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, shellPath: f.codex,
-    env: { MINION_HQ_CODEX_PR: f.repo }, shellArgs: ['--no-daemon', '--approve-for-me', ...titleArgs] }]);
+    env: { MINION_HQ_CODEX_PR: f.repo }, shellArgs: connectionArgs }]);
   const own = f.terminals[0];
   own.name = 'Codex Working pr-7';
   await f.click();
@@ -215,7 +225,7 @@ test('restored terminal ownership survives title changes and takes precedence ov
   assert.deepEqual(f.shown, ['Any live title']);
 });
 
-test('a Codex CLI already resuming this session is focused or reported outside the window', async (t) => {
+test('a Codex CLI in this window is focused; another window does not prevent resuming', async (t) => {
   const f = fixture(t);
   f.session(1);
   f.processes.set(42, { args: ['/bin/codex', 'resume', id(1)], ppid: 41 });
@@ -224,11 +234,10 @@ test('a Codex CLI already resuming this session is focused or reported outside t
   assert.deepEqual(f.shown, ['bash']);
   f.terminals.length = 0;
   await f.click();
-  assert.deepEqual(f.created, []);
-  assert.deepEqual(f.infos, ["The Codex session for pr-7 is already running outside this window's terminals (pid 42)."]);
-  f.processes.clear();
-  await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', '--no-daemon', '--approve-for-me', ...titleArgs, id(1)]);
+  assert.equal(f.created.length, 1);
+  assert.deepEqual(f.infos, []);
+  assert.equal(f.serverStarts.length, 1);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', ...connectionArgs, id(1)]);
 });
 
 test('an open Codex rollout identifies a CLI session, while app servers and unrelated processes do not', async (t) => {
@@ -237,12 +246,16 @@ test('an open Codex rollout identifies a CLI session, while app servers and unre
   f.processes.set(40, { args: ['/bin/codex', 'app-server'], fds: { 5: file } });
   f.processes.set(41, { args: ['/bin/editor', file], fds: { 5: file } });
   f.processes.set(42, { args: ['/bin/codex'], fds: { 5: file } });
+  f.terminals.push(f.terminal('Existing CLI', 42));
   await f.click();
+  assert.deepEqual(f.shown, ['Existing CLI']);
   assert.equal(f.created.length, 0);
-  assert.match(f.infos[0], /pid 42/);
+  f.terminals.length = 0;
   f.processes.delete(42);
   await f.click();
   assert.equal(f.created.length, 1);
+  assert.deepEqual(f.infos, []);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', ...connectionArgs, id(1)]);
 });
 
 test('unknown and non-PR rows do nothing; missing Codex is reported and ~/.local/bin is supported', async (t) => {
@@ -259,4 +272,34 @@ test('unknown and non-PR rows do nothing; missing Codex is reported and ~/.local
   fs.writeFileSync(fallback, '#!/bin/sh\n', { mode: 0o755 });
   await f.click();
   assert.equal(f.created[0].shellPath, fallback);
+});
+
+test('an open desktop session attaches through its shared server and recorded stores', async (t) => {
+  const f = fixture(t);
+  const runtime = { executable: f.codex, CODEX_HOME: path.join(f.root, 'desktop home'), CODEX_SQLITE_HOME: null };
+  f.env.CODEX_SQLITE_HOME = path.join(f.root, 'unrelated store');
+  const file = f.session(1, { runtime, source: 'vscode' });
+  f.processes.set(40, { args: ['/bin/codex', 'app-server'], fds: { 5: file } });
+  await f.click();
+  assert.equal(f.created.length, 1);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['resume', ...connectionArgs, id(1)]);
+  assert.equal(f.serverStarts.length, 1);
+  assert.equal(f.serverStarts[0].executable, runtime.executable);
+  assert.equal(f.serverStarts[0].options.cwd, f.workspace);
+  assert.equal(f.serverStarts[0].options.env.CODEX_HOME, runtime.CODEX_HOME);
+  assert.equal(Object.hasOwn(f.serverStarts[0].options.env, 'CODEX_SQLITE_HOME'), false);
+  assert.deepEqual(f.errors, []);
+});
+
+test('server startup failure is reported without opening a terminal and the next click can retry', async (t) => {
+  const f = fixture(t);
+  f.session(1);
+  f.failServer(new Error('Could not connect to the local server'));
+  await f.click();
+  assert.equal(f.created.length, 0);
+  assert.match(f.errors[0], /Could not connect to the local server/);
+  f.failServer(null);
+  await f.click();
+  assert.equal(f.serverStarts.length, 2);
+  assert.equal(f.created.length, 1);
 });

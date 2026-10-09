@@ -101,10 +101,14 @@ readiness.
 ## Claude per PR
 
 Every PR row carries one Claude control; other rows have none. It opens the
-PR's Claude session as the `claude` CLI in a VS Code terminal named
-`Claude pr-N`, never in the Claude Code chat panel:
+PR's Claude session as the `claude` CLI in a VS Code terminal, never in the
+Claude Code chat panel. Do not assign a fixed terminal name: Claude's live
+title shows `◐`/`◑` while it works and `✳` while it is idle or waiting for input.
+Associate each terminal with its PR path in `MINION_HQ_CLAUDE_PR` so title
+changes do not open duplicate terminals:
 
-- A running `Claude pr-N` terminal is focused.
+- A running terminal of the PR is focused, including an existing `Claude pr-N`
+  terminal.
 - Otherwise the PR's newest Claude session resumes with `claude --resume <id>`
   in the folder it started in. A session belongs to the PR when its id in
   `.ci/session-titles` has a title `scripts/rename-session` began with that
@@ -136,11 +140,15 @@ Associate each terminal with its PR path in `MINION_HQ_CODEX_PR` so title
 updates and manual renames do not open duplicate terminals. Continue to
 recognize existing `Codex pr-N` terminals. Focus that terminal when it is running;
 otherwise resume the newest matching session with
-`codex resume --no-daemon --approve-for-me <id>` in its original folder.
-Without a session, start `codex --no-daemon --approve-for-me` in the PR worktree.
+`codex resume --remote unix:// --approve-for-me <id>` in its original folder.
+Without a session, start `codex --remote unix:// --approve-for-me` in the PR
+worktree. Prepare the same home's local server with the bounded, idempotent
+`codex app-server daemon start` before opening the terminal; report startup
+failure without opening a disconnected terminal. A later click may retry.
 Use automatic approval review with the workspace-write sandbox for both launches.
-Launch without the shared background server so conflicting feature settings
-cannot request a restart or change settings for other clients.
+Connect directly to the shared server so sessions open in the desktop app or
+another window remain the same conversation. Do not restart the shared server
+or change its feature settings to match the terminal.
 
 Match the PR title in `.ci/session-titles` to an unarchived Codex rollout whose
 metadata confirms the session id, an interactive CLI or IDE source, and the PR
@@ -151,10 +159,12 @@ otherwise use the current Codex home and CLI. If a recorded executable is no
 longer available, use `codex` on PATH or in `~/.local/bin` with the same stores.
 
 A CLI identified by its resume id or open rollout is focused in this window's
-terminal, or reported with its pid when outside the window. Background app
-servers do not identify an interactive terminal. Concurrent clicks open only
-one terminal. Session lookup runs only on click and reads bounded rollout
-metadata. The CLI is the terminal's process; send no prompt, start no CI run,
+terminal. A CLI outside this window does not block opening a terminal connected
+to the shared server. Background app servers do not identify an interactive
+terminal. Legacy standalone terminals retain their writer until closed; do not
+terminate them, remove writer locks, or fork the conversation automatically.
+Concurrent clicks open only one terminal. Session lookup runs only on click and
+reads bounded rollout metadata. The CLI is the terminal's process; send no prompt, start no CI run,
 and never toggle the PR row when the control is clicked.
 
 ## Installation

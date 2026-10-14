@@ -15,6 +15,25 @@ Opening a worktree row also opens its Vs master section, whatever state that
 section was left in. Collapse All and Expand All set every worktree, section,
 and commit at once; expanded commits load their files once.
 
+## File groups
+
+Staged, Changes, Vs master, and commit file lists show their files in groups,
+in this order: Code, CI and tests, Scripts, Docs, Other, Vendor. A group
+appears only when it has files and lists them in natural path order. Each file
+goes to the first group that matches its destination path:
+
+- Vendor: identified vendor library files on either side.
+- Docs: root `docs/` files and `.md`, `.markdown`, or `.rst` files.
+- CI and tests: the CI and test paths of [Complexity](#complexity).
+- Scripts: files in a `script`, `scripts`, or `bin` directory, and shell or
+  batch files.
+- Code: source, template, and style files.
+- Other: all remaining files.
+
+A group row shows its file count and all lines of its files, without the
+line-total exclusions. Each group collapses separately. Collapse All and Expand
+All reopen every group, so an opened section shows its files.
+
 ## Line totals
 
 Worktree, Staged, Changes, Vs master, collapsed worktree, and commit line totals

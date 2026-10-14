@@ -938,6 +938,35 @@ function isVerificationPath(filePath) {
     || /(?:Test|Tests|TestCase|Spec|Specs)\.[^.]+$/.test(name);
 }
 
+// File lists show these groups in this order, each sorted by path.
+const FILE_GROUPS = [
+  ['code', 'Code'], ['checks', 'CI and tests'], ['scripts', 'Scripts'],
+  ['docs', 'Docs'], ['other', 'Other'], ['vendor', 'Vendor'],
+];
+const CODE_EXTS = new Set([...QLTY_EXTS, 'html', 'htm', 'css', 'scss', 'sass', 'less',
+  'vue', 'svelte', 'sql', 'jinja', 'j2']);
+
+// Groups a file by its destination path; vendor libraries keep their own group.
+function fileGroup(file) {
+  if (file.vendor || file.vendorHead || file.vendorBase) {
+    return 'vendor';
+  }
+  const normalized = file.path.replace(/^"|"$/g, '').replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  const name = parts.pop();
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
+  if (parts[0] === 'docs' || /^(?:md|markdown|rst)$/.test(ext)) {
+    return 'docs';
+  }
+  if (isVerificationPath(normalized)) {
+    return 'checks';
+  }
+  if (parts.some((part) => /^(?:scripts?|bin)$/i.test(part)) || /^(?:sh|bash|zsh|ps1|bat|cmd)$/.test(ext)) {
+    return 'scripts';
+  }
+  return CODE_EXTS.has(ext) ? 'code' : 'other';
+}
+
 // Per-file deltas from the scored sides: `scored` holds one entry per file
 // with its qlty row at HEAD and at the merge base (null where the file does
 // not exist on that side or qlty produced no row). Files qlty scored on
@@ -1065,6 +1094,7 @@ function getHtml(nonce) {
   .twist { width: 16px; flex: none; text-align: center; opacity: .8; font-size: .8em; }
   .name { overflow: hidden; text-overflow: ellipsis; }
   .hdr .name { font-weight: 600; }
+  .grp .name { font-size: .85em; text-transform: uppercase; letter-spacing: .04em; opacity: .8; }
   .dim { opacity: .6; margin-left: 7px; font-size: .9em; overflow: hidden; text-overflow: ellipsis; }
   .spacer { flex: 1; min-width: 8px; }
   .st { width: 1.4em; flex: none; text-align: center; font-weight: 600; }
@@ -1162,6 +1192,10 @@ function setExpansion(mode) {
     for (const kind of ['staged', 'changes', 'vsmaster', 'commits']) {
       state.collapsed['s|' + r.repoPath + '|' + kind] = collapsed;
     }
+    // File groups reopen, so an opened section shows its files.
+    for (const id of Object.keys(state.collapsed)) {
+      if (id.startsWith('g|' + r.repoPath + '|')) delete state.collapsed[id];
+    }
     for (const c of r.commits) {
       state.collapsed['c|' + r.repoPath + '|' + c.hash] = collapsed;
       if (!collapsed) { loadCommitFiles(r.repoPath, c.hash); }
@@ -1237,7 +1271,7 @@ function row(depth, opts) {
   const pad = 4 + depth * 14;
   const twist = opts.twist === undefined ? '<span class="twist"></span>'
     : '<span class="twist">' + (opts.twist ? '▸' : '▾') + '</span>';
-  return '<div class="row ' + (opts.hdr ? 'hdr' : '') + '" style="padding-left:' + pad + 'px" data-act="' + esc(opts.act || '') + '">'
+  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + '" style="padding-left:' + pad + 'px" data-act="' + esc(opts.act || '') + '">'
     + twist
     + '<span class="name">' + opts.name + '</span>'
     + (opts.tag || '')
@@ -1256,6 +1290,29 @@ function fileRow(depth, repoPath, f, act, lead) {
     cols: (lead || '') + cols(f.add, f.del, f.letter, f.binary),
     act,
   });
+}
+
+// One file list in its kind groups; group totals count every line of their files.
+function groupedFiles(depth, repoPath, list, files, fileHtml) {
+  const groups = {};
+  for (const f of files) {
+    const key = fileGroup(f);
+    (groups[key] = groups[key] || []).push(f);
+  }
+  let h = '';
+  for (const [key, label] of FILE_GROUPS) {
+    const members = groups[key];
+    if (!members) continue;
+    members.sort((a, b) => a.path.localeCompare(b.path, 'en', { numeric: true }));
+    const gid = 'g|' + repoPath + '|' + list + '|' + key;
+    const gc = isCollapsed(gid, false);
+    const add = members.reduce((n, f) => n + (f.add || 0), 0);
+    const del = members.reduce((n, f) => n + (f.del || 0), 0);
+    h += row(depth, { grp: true, twist: gc, name: esc(label) + ' (' + members.length + ')',
+      cols: cols(add, del, null, false), act: 't|' + gid + '|0' });
+    if (!gc) for (const f of members) h += fileHtml(depth + 1, f);
+  }
+  return h;
 }
 
 function render() {
@@ -1310,7 +1367,8 @@ function render() {
       const st = sumFiles(files);
       h += row(1, { hdr: true, twist: sc, name: esc(label) + ' (' + files.length + ')',
         cols: cols(st.add, st.del, null, false), act: 't|' + sid + '|' + (dflt ? 1 : 0) });
-      if (!sc) for (const f of files) h += fileRow(2, r.repoPath, f, (kind === 'staged' ? 's|' : 'w|') + r.repoPath + '|' + f.path);
+      if (!sc) h += groupedFiles(2, r.repoPath, kind, files,
+        (depth, f) => fileRow(depth, r.repoPath, f, (kind === 'staged' ? 's|' : 'w|') + r.repoPath + '|' + f.path));
     }
 
     if (r.vsMaster) {
@@ -1324,10 +1382,9 @@ function render() {
         dim: behind + ' · ↑' + v.ahead,
         cols: dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
         act: 't|' + vid + '|0' });
-      if (!vc) for (const f of v.files) {
-        h += fileRow(2, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
-          f.vendor && !f.cx ? vendorCell(f.vendor) : v.cx ? cxCell(f.cx || null) : '');
-      }
+      if (!vc) h += groupedFiles(2, r.repoPath, 'vsmaster', v.files,
+        (depth, f) => fileRow(depth, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
+          f.vendor && !f.cx ? vendorCell(f.vendor) : v.cx ? cxCell(f.cx || null) : ''));
     }
 
     if (r.commits.length) {
@@ -1345,7 +1402,8 @@ function render() {
           if (!files) {
             h += row(3, { name: '<span class="dim">loading…</span>' });
           } else {
-            for (const f of files) h += fileRow(3, r.repoPath, f, 'k|' + r.repoPath + '|' + c.hash + '|' + f.path);
+            h += groupedFiles(3, r.repoPath, 'c:' + c.hash, files,
+              (depth, f) => fileRow(depth, r.repoPath, f, 'k|' + r.repoPath + '|' + c.hash + '|' + f.path));
           }
         }
       }
@@ -1417,7 +1475,10 @@ window.addEventListener('message', (ev) => {
 });
 
 const CI_SUPPORT_PATHS = new Set(${JSON.stringify([...CI_SUPPORT_PATHS])});
+const FILE_GROUPS = ${JSON.stringify(FILE_GROUPS)};
+const CODE_EXTS = new Set(${JSON.stringify([...CODE_EXTS])});
 ${isVerificationPath.toString()}
+${fileGroup.toString()}
 ${isExcludedLinePath.toString()}
 ${sumFiles.toString()}
 
@@ -1905,6 +1966,7 @@ class StatsViewProvider {
       ]);
       const letters = parseNameStatus(nsOut);
       const files = parseNumstat(numOut).map((f) => ({ ...f, letter: letters[f.path] || 'M' }));
+      await markLineVendors(m.repoPath, m.hash + '^', m.hash, files, vendorDeclarations(m.repoPath), new Map());
       if (this.view) this.view.webview.postMessage({ type: 'commitFiles', repoPath: m.repoPath, hash: m.hash, files });
     } else if (m.type === 'claude') {
       const repo = this.data.get(m.repoPath);

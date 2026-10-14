@@ -396,6 +396,12 @@ function labelFrom(slug, caseNumber) {
   return CASE_NUMBER_RE.test(caseNumber || '') ? '#' + caseNumber + ' - ' + summary : summary;
 }
 
+// The PR a separate topic came from, as `ci new --from/--on` recorded it in
+// pr-N.from; null for none or a malformed sidecar, as scripts/ci reads it.
+function originFrom(value, serial) {
+  return /^[1-9][0-9]*$/.test(value || '') && +value !== serial ? +value : null;
+}
+
 // Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so
 // one log per master revision answers for every row in the window.
 let landedCache = { sha: null, serials: new Set() };
@@ -451,6 +457,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   const ciState = ciStateDir(repoPath);
   const slug = readCiState(ciState, 'pr-' + serial + '.slug');
   const label = labelFrom(slug, readCiState(ciState, 'pr-' + serial + '.case'));
+  const origin = originFrom(readCiState(ciState, 'pr-' + serial + '.from'), serial);
   const known = fs.existsSync(ciState); // an unrelated repo named pr-N stays untagged
   let status = '', statusLabel;
   if ((await landedSerials(repoPath, masterSha)).has(serial)) status = 'landed';
@@ -458,7 +465,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (readiness) { status = readiness.state; statusLabel = readiness.statusLabel; }
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
-    statusLabel, customLabel: readiness && readiness.customLabel } : null;
+    statusLabel, customLabel: readiness && readiness.customLabel, origin } : null;
 }
 
 // Import only the landed CI's read-only report. Never execute a worktree's CI
@@ -1083,8 +1090,8 @@ function getHtml(nonce) {
   .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .claude:hover, .codex:hover { opacity: 1; }
-  .prst, .pr-custom-label { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
-  .pr-custom-label { color: var(--vscode-descriptionForeground); }
+  .prst, .pr-origin, .pr-custom-label { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
+  .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
   .prst-blocked, .prst-checks-outdated, .prst-checks-missing, .prst-agent-sign-off-missing,
@@ -1131,10 +1138,11 @@ function prTag(pr, ci) {
   const reason = pr.status === 'landed' || pr.status === 'testing'
     ? PR_STATUS_TIP[pr.status]
     : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel, ci?.reviewLabel].filter(Boolean).join('\\n');
+  const origin = pr.origin ? '<span class="pr-origin">(-&gt;pr-' + esc(pr.origin) + ')</span>' : '';
   const custom = pr.customLabel
     ? '<span class="pr-custom-label" title="Custom label: ' + esc(pr.customLabel) + '">[' + esc(pr.customLabel) + ']</span>'
     : '';
-  return custom + '<span class="prst prst-' + esc(pr.status) + '" title="'
+  return origin + custom + '<span class="prst prst-' + esc(pr.status) + '" title="'
     + esc(reason) + '">[' + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }

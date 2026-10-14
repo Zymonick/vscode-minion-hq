@@ -227,3 +227,32 @@ test('manual labels render separately before readiness and retain its actions', 
   assert.doesNotMatch(root.innerHTML, /<span class="pr-custom-label"/);
   assert.ok(root.innerHTML.includes('[' + f.report.status + ']'));
 });
+
+test('a recorded origin PR renders before the custom label', async (t) => {
+  const f = fixture(t);
+  const root = { innerHTML: '' };
+  let receive;
+  const script = f.getHtml('N').match(/<script nonce="N">([^]*)<\/script>/)[1];
+  vm.runInNewContext(script, {
+    acquireVsCodeApi: () => ({ getState: () => ({}), postMessage() {} }),
+    document: { getElementById: () => root, addEventListener() {} },
+    window: { addEventListener: (_, handler) => { receive = handler; } },
+  });
+  const from = path.join(path.dirname(f.repo), '.ci', 'pr-7.from');
+  f.report.display_label = 'waiting';
+  for (const [value, origin] of [['5', 5], ['7', null], ['x', null], ['05', null]]) {
+    fs.writeFileSync(from, value);
+    const ci = await f.collect();
+    const pr = await f.collectPr(f.repo, 'master', new Set(), ci);
+    assert.equal(pr.origin, origin);
+    receive({ data: { type: 'data', repos: [{
+      repoPath: f.repo, name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
+      staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
+    }] } });
+    if (origin) {
+      assert.match(root.innerHTML, /<span class="pr-origin">\(-&gt;pr-5\)<\/span><span class="pr-custom-label"/);
+    } else {
+      assert.doesNotMatch(root.innerHTML, /pr-origin">/);
+    }
+  }
+});

@@ -91,6 +91,11 @@ the custom label remains while supplied by CI. Missing or empty labels add
 no marker. `ci label TARGET TEXT` sets the label in the terminal; omitting
 `TEXT` clears it. Reuse the existing readiness read and refresh lifecycle.
 
+A PR origin that `ci new --from M` or `--on M` records in `.ci/pr-N.from`
+appears as a neutral `(->pr-M)` marker before the custom label, as in the
+session title. A missing or malformed file, or one that names the PR itself,
+adds no marker.
+
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.

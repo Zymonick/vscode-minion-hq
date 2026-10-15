@@ -118,7 +118,7 @@ adds no marker.
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.
-Keep file and diff navigation, refresh, expansion, and Claude and Codex per PR controls.
+Keep file and diff navigation, refresh, expansion, and Claude, Codex and screenshot per PR controls.
 Use the existing refresh lifecycle; do not add polling or background jobs for
 readiness.
 
@@ -190,6 +190,21 @@ terminate them, remove writer locks, or fork the conversation automatically.
 Concurrent clicks open only one terminal. Session lookup runs only on click and
 reads bounded rollout metadata. The CLI is the terminal's process; send no prompt, start no CI run,
 and never toggle the PR row when the control is clicked.
+
+## Screenshots per PR
+
+A PR row carries a picture control when `kylie-shots/PR_N` beside the worktrees
+folder, or one of its direct subfolders, holds a PNG, WebP, JPEG or GIF image.
+Its tooltip gives the image count and the `taken` time of `shots.json`, when
+present. Detect the set within the existing repository scan; add no polling.
+
+Clicking the control opens one editor tab per PR, named `pr-N · Screenshots`,
+and never toggles the row. The tab shows CI's `index.html` with its relative
+image links loaded from the set folder, then every image of the set the page
+does not show, in natural path order. Without `index.html` it shows all
+images. The tab loads resources only from the set folder and runs only its own
+script; links outside the set go nowhere. Clicking an image opens that file
+full size in an editor. A later click re-reads the set and reuses an open tab.
 
 ## Installation
 

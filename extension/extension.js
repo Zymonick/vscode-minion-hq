@@ -402,6 +402,120 @@ function originFrom(value, serial) {
   return /^[1-9][0-9]*$/.test(value || '') && +value !== serial ? +value : null;
 }
 
+// ── Screenshots ─────────────────────────────────────────────────────────────
+// `ci preview N shots` keeps each PR's before/after set in kylie-shots/PR_N,
+// beside the worktrees folder; visibility checks add images in its subfolders.
+const SHOT_EXTS = new Set(['.png', '.webp', '.jpg', '.jpeg', '.gif']);
+
+function shotsDir(repoPath, serial) {
+  return path.join(path.dirname(path.dirname(repoPath)), 'kylie-shots', 'PR_' + serial);
+}
+
+// The set's images relative to its folder, from the folder and its direct
+// subfolders, in natural order.
+function shotImages(dir) {
+  const found = [];
+  const visit = (rel, depth) => {
+    let entries;
+    try { entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const name = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory() && !depth) visit(name, 1);
+      else if (e.isFile() && SHOT_EXTS.has(path.extname(e.name).toLowerCase())) found.push(name);
+    }
+  };
+  visit('', 0);
+  return found.sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+}
+
+// The row control's facts: image count and when CI took the set. Null without images.
+function shotsSummary(repoPath, serial) {
+  const dir = shotsDir(repoPath, serial);
+  const images = shotImages(dir).length;
+  if (!images) return null;
+  let taken = null;
+  try { taken = JSON.parse(fs.readFileSync(path.join(dir, 'shots.json'), 'utf8')).taken; } catch {}
+  return { images, taken: typeof taken === 'string' ? taken : null };
+}
+
+// An image of the set named relative to its folder; null for anything else.
+function shotFile(dir, rel) {
+  if (typeof rel !== 'string' || !rel || path.isAbsolute(rel)) return null;
+  const file = path.resolve(dir, rel);
+  const inside = path.relative(dir, file);
+  if (!inside || inside.startsWith('..') || !SHOT_EXTS.has(path.extname(file).toLowerCase())) return null;
+  try { return fs.statSync(file).isFile() ? file : null; } catch { return null; }
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function unescHtml(s) {
+  return s.replace(/&(amp|lt|gt|quot|#39|#x27);/g, (all, name) => (
+    { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", '#x27': "'" }[name]));
+}
+
+// CI's index.html with its relative image links loading through the webview,
+// followed by any image it does not show, such as clicked states. The policy
+// blocks everything else; a click opens the image full size in an editor.
+function shotsPage(dir, webview, nonce, title) {
+  const uri = (file) => escHtml(webview.asWebviewUri(vscode.Uri.file(file)).toString());
+  let page;
+  try {
+    page = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  } catch {
+    page = '<!doctype html><html><head><meta charset="utf-8"><title>' + escHtml(title)
+      + '</title></head><body><h1>' + escHtml(title) + '</h1></body></html>';
+  }
+  const shown = new Set();
+  page = page.replace(/\b(src|href)="([^"]*)"/g, (all, attr, value) => {
+    const rel = unescHtml(value);
+    const file = shotFile(dir, rel);
+    if (!file) return attr === 'href' ? 'href="#"' : all;
+    shown.add(path.relative(dir, file).split(path.sep).join('/'));
+    return attr + '="' + uri(file) + '"' + (attr === 'href' ? ' data-file="' + escHtml(rel) + '"' : '');
+  });
+  const others = shotImages(dir).filter((rel) => !shown.has(rel));
+  const extra = others.length ? '<section class="minion-other"><h2>Other screenshots</h2>' + others.map((rel) => {
+    const file = path.join(dir, rel);
+    return '<figure><figcaption>' + escHtml(rel) + '</figcaption><a href="' + uri(file) + '" data-file="'
+      + escHtml(rel) + '"><img src="' + uri(file) + '" alt="' + escHtml(rel) + '" loading="lazy"></a></figure>';
+  }).join('') + '</section>' : '';
+  const head = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src '
+    + webview.cspSource + '; style-src \'unsafe-inline\'; script-src \'nonce-' + nonce + '\';">'
+    + '<style>.minion-other figure { margin: 16px 0; } .minion-other img { width: auto; max-width: 100%; }</style>';
+  const tail = extra + '<script nonce="' + nonce + '">const vscode = acquireVsCodeApi();'
+    + 'document.addEventListener("click", (ev) => { const link = ev.target.closest("a"); if (!link) return;'
+    + ' ev.preventDefault(); if (link.dataset.file) vscode.postMessage({ type: "open", file: link.dataset.file }); });</script>';
+  page = /<head\b[^>]*>/i.test(page) ? page.replace(/<head\b[^>]*>/i, (tag) => tag + head) : head + page;
+  return /<\/body>/i.test(page) ? page.replace(/<\/body>/i, () => tail + '</body>') : page + tail;
+}
+
+// One editor tab per set; opening it again re-reads a replaced set.
+const shotPanels = new Map();
+function openShots(repo) {
+  const dir = shotsDir(repo.repoPath, repo.pr.serial);
+  if (!shotImages(dir).length) throw new Error('no screenshots in ' + dir);
+  const title = `pr-${repo.pr.serial} · Screenshots`;
+  let panel = shotPanels.get(dir);
+  if (!panel) {
+    panel = vscode.window.createWebviewPanel('minionHqShots', title, vscode.ViewColumn.Active,
+      { enableScripts: true, localResourceRoots: [vscode.Uri.file(dir)] });
+    shotPanels.set(dir, panel);
+    panel.onDidDispose(() => shotPanels.delete(dir));
+    panel.webview.onDidReceiveMessage((m) => {
+      const file = m && m.type === 'open' && shotFile(dir, m.file);
+      if (!file) return;
+      Promise.resolve(vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file)))
+        .catch((error) => log('shots: ' + file + ': ' + error.message));
+    });
+  }
+  const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  panel.webview.html = shotsPage(dir, panel.webview, nonce, title);
+  panel.reveal();
+}
+
 // Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so
 // one log per master revision answers for every row in the window.
 let landedCache = { sha: null, serials: new Set() };
@@ -465,7 +579,8 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (readiness) { status = readiness.state; statusLabel = readiness.statusLabel; }
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
-    statusLabel, customLabel: readiness && readiness.customLabel, origin } : null;
+    statusLabel, customLabel: readiness && readiness.customLabel, origin,
+    shots: shotsSummary(repoPath, serial) } : null;
 }
 
 // Import only the landed CI's read-only report. Never execute a worktree's CI
@@ -1119,7 +1234,8 @@ function getHtml(nonce) {
   @keyframes agentpulse { 50% { opacity: .4; } }
   .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
-  .claude:hover, .codex:hover { opacity: 1; }
+  .shots { color: var(--vscode-charts-green, #89d185); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
+  .claude:hover, .codex:hover, .shots:hover { opacity: 1; }
   .prst, .pr-origin, .pr-custom-label { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
@@ -1342,6 +1458,15 @@ function render() {
       + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
       + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Codex">'
       + '<path d="m3 4 4 4-4 4m6 0h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : '';
+    // A PR with a screenshot set opens it in an editor tab.
+    const shots = r.pr && r.pr.shots;
+    const shotsHtml = shots ? '<span class="shots" data-shots="' + esc(r.repoPath) + '" title="'
+      + esc('Screenshots of ' + r.name + ': ' + shots.images + (shots.images === 1 ? ' image' : ' images')
+        + (shots.taken ? ', taken ' + shots.taken : ''))
+      + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Screenshots">'
+      + '<rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>'
+      + '<path d="m3.5 11.5 3-3.5 2.5 2.5 1.5-1.5 2 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>'
+      + '<circle cx="10.5" cy="6" r="1" fill="currentColor"/></svg></span>' : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1353,7 +1478,7 @@ function render() {
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
-      btns: claudeHtml + codexHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
+      btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
     const sections = [
@@ -1421,6 +1546,11 @@ document.addEventListener('click', (ev) => {
   const codex = ev.target.closest('.codex');
   if (codex) {
     vscode.postMessage({ type: 'codex', repoPath: codex.dataset.codex });
+    return;
+  }
+  const shots = ev.target.closest('.shots');
+  if (shots) {
+    vscode.postMessage({ type: 'shots', repoPath: shots.dataset.shots });
     return;
   }
   const el = ev.target.closest('.row');
@@ -1985,6 +2115,15 @@ class StatsViewProvider {
       } catch (error) {
         log('codex: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open Codex for ${repo.name}: ${error.message}`);
+      }
+    } else if (m.type === 'shots') {
+      const repo = this.data.get(m.repoPath);
+      if (!repo || !repo.pr) return;
+      try {
+        openShots(repo);
+      } catch (error) {
+        log('shots: ' + repo.name + ': ' + error.message);
+        vscode.window.showErrorMessage(`Could not open the screenshots of ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'open') {
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));

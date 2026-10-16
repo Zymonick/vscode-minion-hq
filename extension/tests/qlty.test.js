@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
@@ -14,7 +15,7 @@ function load() {
     workspace: { getConfiguration: () => ({ get: () => '' }) },
     window: { createOutputChannel: () => ({ appendLine() {} }) },
   };
-  return vm.runInNewContext(source + '\n({ parseQltyTable, qltyExt, isVerificationPath, complexityTotals, getHtml });', {
+  return vm.runInNewContext(source + '\n({ parseQltyTable, qltyExt, isVerificationPath, complexityTotals, exportComplexity, getHtml });', {
     module: { exports: {} },
     process,
     Buffer,
@@ -78,6 +79,40 @@ test('deltas count merge base vs HEAD, added and deleted files from or to zero',
     cognitive: 7, cyclo: 11, head: 19, base: 12, files: 3,
     checks: { cognitive: 0, cyclo: 0, head: 0, base: 0, files: 0 },
   });
+});
+
+test('the shown rating is exported per worktree and rewritten only when it changes', () => {
+  const { complexityTotals, exportComplexity } = load();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-cx-'));
+  try {
+    const views = { path: 'invoice/views.py' }, tests = { path: 'invoice/tests.py' }, template = { path: 'invoice/list.html' };
+    const v = { headSha: 'h1', mergeBase: 'b1', files: [views, tests, template], cx: complexityTotals([
+      { f: views, head: { complex: 9, cyclo: 12 }, base: { complex: 4, cyclo: 6 } },
+      { f: tests, head: { complex: 7, cyclo: 9 }, base: null },
+      { f: template, head: null, base: null },
+    ]) };
+    exportComplexity(dir, '/worktrees/pr-7', v);
+    const file = path.join(dir, 'pr-7.json');
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {
+      repo: '/worktrees/pr-7', head: 'h1', mergeBase: 'b1', cx: 5,
+      application: { cognitive: 5, cyclo: 6, head: 9, base: 4, files: 1 },
+      checks: { cognitive: 7, cyclo: 9, head: 7, base: 0, files: 1 },
+      files: [
+        { path: 'invoice/views.py', cognitive: 5, cyclo: 6, excluded: false },
+        { path: 'invoice/tests.py', cognitive: 7, cyclo: 9, excluded: true },
+      ],
+    });
+    const old = new Date(2020, 0, 1);
+    fs.utimesSync(file, old, old);
+    exportComplexity(dir, '/worktrees/pr-7', v);
+    exportComplexity(dir, '/worktrees/pr-7', { ...v, cx: null });
+    assert.equal(fs.statSync(file).mtimeMs, old.getTime());
+    exportComplexity(dir, '/worktrees/pr-7', { ...v, headSha: 'h2' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).head, 'h2');
+    assert.deepEqual(fs.readdirSync(dir), ['pr-7.json']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('conventional test files and helpers are classified without matching similar source names', () => {

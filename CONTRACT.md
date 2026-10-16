@@ -85,6 +85,13 @@ Tests embedded in application files are not separated from their file's score.
 Identified vendor libraries stay outside both totals. Scores compare the merge
 base with the same HEAD used by the branch diff; unscored files show no score.
 
+Each scored refresh writes the worktree row's rating to
+`~/.cache/minion-hq/complexity/<worktree folder>.json` for agents: repository
+path, `head`, `mergeBase`, `cx` (the shown application rating), the
+`application` and `checks` totals, and the cognitive and cyclomatic change of
+each scored file with its exclusion. A file is rewritten only when its content
+changes and is never deleted; it rates only the revision named by `head`.
+
 ## PR readiness
 
 Show one task status marker per PR using the landed Kylie's `pr_status` report.

@@ -1196,6 +1196,36 @@ async function collectComplexity(repoPath, mergeBase, files, renames, headSha, d
   return complexityTotals([...sides.values()], renames);
 }
 
+// The rating a worktree row shows, as `<worktree folder>.json`, so an agent in
+// a terminal can read the number the panel shows for its HEAD. A rating depends
+// only on HEAD and the merge base, so a file is rewritten when it changes and
+// never deleted; an unscored refresh leaves the last rating in place.
+const COMPLEXITY_EXPORT_DIR = path.join(os.homedir(), '.cache', 'minion-hq', 'complexity');
+
+function exportComplexity(dir, repoPath, v) {
+  if (!v.cx || !v.headSha) return;
+  const { checks, ...application } = v.cx;
+  const files = v.files.filter((f) => f.cx).map((f) => ({
+    path: f.path, cognitive: f.cx.cognitive, cyclo: f.cx.cyclo, excluded: f.cx.excluded,
+  }));
+  const text = JSON.stringify({
+    repo: repoPath, head: v.headSha, mergeBase: v.mergeBase, cx: application.cognitive,
+    application, checks, files,
+  }, null, 2) + '\n';
+  const file = path.join(dir, path.basename(repoPath) + '.json');
+  try {
+    if (fs.readFileSync(file, 'utf8') === text) return;
+  } catch { /* not written yet */ }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const temp = file + '.' + process.pid + '.tmp';
+    fs.writeFileSync(temp, text);
+    fs.renameSync(temp, file);
+  } catch (e) {
+    log('complexity export: ' + path.basename(repoPath) + ': ' + e.message);
+  }
+}
+
 function getHtml(nonce) {
   return `<!DOCTYPE html>
 <html>
@@ -2057,6 +2087,7 @@ class StatsViewProvider {
             log('complexity: ' + path.basename(d.repoPath) + ': ' + e.message);
             return null;
           });
+          exportComplexity(COMPLEXITY_EXPORT_DIR, d.repoPath, v);
           publish();
         });
       }

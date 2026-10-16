@@ -26,6 +26,7 @@ function load({ collect, complexity = async () => null, fileSystem = fs, childPr
     const collectOriginal = collectRepo;
     collectRepo = collect;
     collectComplexity = complexity;
+    exportComplexity = () => {};
     scanAgents = () => ({});
     scanTestingSerials = () => new Set();
     ({ StatsViewProvider, git, countLines, collectOriginal });

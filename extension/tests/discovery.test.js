@@ -19,7 +19,7 @@ function start(groups, initial, { deferred = false, excluded = [] } = {}) {
   };
   const vscode = {
     EventEmitter: class { fire() {} dispose() {} event() {} },
-    commands: { registerCommand: disposable },
+    commands: { registerCommand: disposable, executeCommand: async () => {} },
     window: {
       createOutputChannel: () => ({ appendLine() {} }),
       registerWebviewViewProvider: (id, value) => { provider = value; return disposable(); },

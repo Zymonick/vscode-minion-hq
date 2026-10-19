@@ -44,6 +44,14 @@ function repo(repoPath) {
   };
 }
 
+test('pending repositories add no loading message above shown rows', () => {
+  const v = view();
+  v.send({ type: 'data', repos: [], loading: true });
+  assert.match(v.root.innerHTML, /Loading repositories/);
+  v.send({ type: 'data', repos: [repo('/a')], loading: true });
+  assert.doesNotMatch(v.root.innerHTML, /Loading/);
+});
+
 test('title actions collapse and expand every level while preserving drafts and loaded files', () => {
   const v = view();
   v.send({ type: 'data', repos: [repo('/a'), repo('/b')] });

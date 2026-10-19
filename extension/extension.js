@@ -1545,7 +1545,7 @@ function render() {
     root.innerHTML = '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>';
     return;
   }
-  let h = loading ? '<div class="empty">Loading remaining repositories…</div>' : '';
+  let h = '';
   for (const r of repos) {
     const rid = 'r|' + r.repoPath;
     const rc = isCollapsed(rid, false);
@@ -2086,6 +2086,13 @@ class StatsViewProvider {
     }
   }
 
+  setLoading(loading) {
+    if (loading !== this.loading) {
+      this.loading = loading;
+      vscode.commands.executeCommand('setContext', 'scmDiffStats.loading', loading);
+    }
+  }
+
   setRepos(paths) {
     // Git discovers siblings in a different order from `worktree list`.
     // Keep the active scan and row order when membership has not changed.
@@ -2095,7 +2102,7 @@ class StatsViewProvider {
     }
     this.reposKnown = true;
     this.repos = [...paths].sort(compareRepoPaths);
-    this.loading = true;
+    this.setLoading(this.repos.some((r) => !this.data.has(r)));
     this.refresh();
   }
 
@@ -2113,7 +2120,6 @@ class StatsViewProvider {
         const testing = scanTestingSerials(
           repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
         const results = new Array(repos.length);
-        let completed = 0;
         const publish = () => {
           if (!current()) {
             return;
@@ -2121,7 +2127,8 @@ class StatsViewProvider {
           // Keep previous rows usable while refreshing; a failed scan removes its stale row.
           this.data = new Map(repos.map((r, i) =>
             [r, results[i] === undefined ? this.data.get(r) : results[i]]).filter(([, d]) => d));
-          this.loading = completed < repos.length;
+          // Only repositories without a row are loading; refreshing shown rows stays silent.
+          this.setLoading(repos.some((r, i) => results[i] === undefined && !this.data.has(r)));
           this.fileStats.clear();
           for (const d of this.data.values()) {
             for (const f of [...d.staged, ...d.unstaged, ...d.untracked]) {
@@ -2152,7 +2159,6 @@ class StatsViewProvider {
               f.cx = scores.get(f.path);
             }
           }
-          completed++;
           publish();
         });
         if (!repos.length) {
@@ -2296,6 +2302,8 @@ class StatsViewProvider {
 function activate(context) {
   const provider = new StatsViewProvider();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('scmDiffStats', provider));
+  vscode.commands.executeCommand('setContext', 'scmDiffStats.loading', provider.loading);
+  context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.loading', () => {}));
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.refresh', () => provider.refresh()));
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.collapseAll', () => provider.setExpansion('collapse')));
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.expandAll', () => provider.setExpansion('expand')));

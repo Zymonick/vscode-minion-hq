@@ -9,6 +9,13 @@ repository additions or removals, regardless of Git's discovery order.
 Rediscovering the same repositories in a different order must not restart
 their active scan.
 
+## Loading
+
+While a repository without a row is read, the view title shows a spinning
+loading icon to the left of its buttons. Refreshes of shown rows, including
+the periodic poll, show no loading indicator. The row list shows no loading
+message above its rows and keeps its layout during refreshes.
+
 ## Expansion
 
 Opening a worktree row also opens its Vs master section, whatever state that

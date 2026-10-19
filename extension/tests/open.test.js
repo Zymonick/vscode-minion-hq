@@ -43,7 +43,8 @@ function harness(childProcess = cp) {
     EventEmitter: class { event() {} fire() {} dispose() {} },
     commands: {
       registerCommand: disposable,
-      executeCommand: async (...args) => { commands.push(args); },
+      // Only editor commands; the loading context key is not an open.
+      executeCommand: async (...args) => { if (args[0] !== 'setContext') commands.push(args); },
     },
     window: {
       tabGroups: { all: groups },

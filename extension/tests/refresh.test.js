@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function load({ collect, complexity = async () => null, fileSystem = fs, childProcess = {} } = {}) {
+function load({ collect, complexity = async () => null, fileSystem = fs, childProcess = {}, contexts = [] } = {}) {
   const context = {
     module: { exports: {} }, process, Buffer, setImmediate, complexity,
     collect: collect || (async (repoPath) => ({ repoPath, staged: [], unstaged: [], untracked: [] })),
@@ -16,6 +16,7 @@ function load({ collect, complexity = async () => null, fileSystem = fs, childPr
         Uri: { file: (file) => file },
         workspace: { getConfiguration: () => ({ get: () => '' }) },
         window: { createOutputChannel: () => ({ appendLine() {} }) },
+        commands: { executeCommand: async (command, key, value) => contexts.push([key, value]) },
       };
       if (name === 'fs') return fileSystem;
       if (name === 'child_process') return childProcess;
@@ -51,6 +52,40 @@ test('startup publishes the first completed row while other repositories are sti
   }
   await done;
   assert.deepEqual([...provider.data.keys()], provider.repos);
+});
+
+test('only repositories without a row show the title loading icon', async () => {
+  const work = deferredRepos();
+  const contexts = [];
+  const { StatsViewProvider } = load({ ...work, contexts });
+  const provider = new StatsViewProvider();
+  const finish = async () => {
+    while (work.pending.length) {
+      work.pending.shift()();
+      await tick();
+    }
+    await provider.refreshPromise;
+  };
+  provider.setRepos(['/repos/a']);
+  await tick();
+  assert.equal(provider.loading, true);
+  await finish();
+  assert.deepEqual(contexts, [['scmDiffStats.loading', false]]);
+
+  // The periodic poll rescans shown rows without a loading indicator.
+  provider.refresh();
+  await tick();
+  assert.equal(provider.loading, false);
+  await finish();
+  assert.equal(contexts.length, 1);
+
+  provider.setRepos(['/repos/a', '/repos/b']);
+  await tick();
+  work.pending.shift()();
+  await tick();
+  assert.equal(provider.loading, true, 'the new repository has no row yet');
+  await finish();
+  assert.deepEqual(contexts.slice(1), [['scmDiffStats.loading', true], ['scmDiffStats.loading', false]]);
 });
 
 test('complexity waits until all basic rows are published and stays bounded', async () => {

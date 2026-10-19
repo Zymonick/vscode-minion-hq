@@ -561,6 +561,17 @@ function scanTestingSerials(prWorktrees) {
   return held;
 }
 
+// The agent's estimate of the smallest application complexity increase the
+// PR's requests need, which the agent keeps in docs/PR_N/cx_estimate.json of
+// the working tree; null when the file is missing or malformed.
+function estimateSummary(repoPath, serial) {
+  let e;
+  try { e = JSON.parse(fs.readFileSync(path.join(repoPath, 'docs', 'PR_' + serial, 'cx_estimate.json'), 'utf8')); } catch { return null; }
+  if (!e || !Number.isInteger(e.cx)) return null;
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  return { cx: e.cx, prompt: text(e.prompt, 40), reason: text(e.reason, 300) };
+}
+
 // The PR identity of a worktree: its serial, the label CI recorded for it, and
 // its effective readiness. Landed and running CI operations take precedence;
 // a stored test result alone never declares completion.
@@ -580,7 +591,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
     statusLabel, customLabel: readiness && readiness.customLabel, origin,
-    shots: shotsSummary(repoPath, serial) } : null;
+    shots: shotsSummary(repoPath, serial), estimate: estimateSummary(repoPath, serial) } : null;
 }
 
 // Import only the landed CI's read-only report. Never execute a worktree's CI
@@ -1251,7 +1262,7 @@ function getHtml(nonce) {
   .cx-up { color: var(--vscode-charts-orange, #d18616); }
   .cx-down { color: var(--vscode-charts-green, #89d185); }
   .cx-zero { opacity: .6; }
-  .cx-excluded { color: var(--vscode-descriptionForeground, #999); }
+  .cx-excluded, .cx-estimate { color: var(--vscode-descriptionForeground, #999); }
   .dependencies { font-size: .85em; margin-right: 8px; overflow: hidden; text-overflow: ellipsis; }
   .st-M { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
   .st-A, .st-U { color: var(--vscode-gitDecoration-untrackedResourceForeground); }
@@ -1381,6 +1392,14 @@ function cxCell(cx) {
   return '<span class="cx ' + cls + '" title="' + esc(tip) + '"><span class="cxl">cx</span>' + signed(n) + '</span>';
 }
 
+// The agent's expected minimal cx of a PR, beside the measured one.
+function estimateCell(e) {
+  if (!e) return '';
+  const tip = 'Agent estimate of the minimal application complexity increase: ' + signed(e.cx)
+    + (e.prompt ? ', after the prompt of ' + e.prompt : '') + (e.reason ? ' — ' + e.reason : '');
+  return '<span class="cx cx-estimate" title="' + esc(tip) + '"><span class="cxl">est</span>' + signed(e.cx) + '</span>';
+}
+
 function dependencySize(bytes) {
   if (bytes < 1000) return bytes + ' B';
   if (bytes < 1000000) return (bytes / 1000).toFixed(1) + ' kB';
@@ -1504,7 +1523,8 @@ function render() {
     let repoCols = (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
-      repoCols = dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
+      repoCols = dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
+        + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
@@ -1535,7 +1555,8 @@ function render() {
         : 'not behind master';
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
-        cols: dependencyCell(v.dependencies) + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
+        cols: dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
+          + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
         act: 't|' + vid + '|0' });
       if (!vc) h += groupedFiles(2, r.repoPath, 'vsmaster', v.files,
         (depth, f) => fileRow(depth, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,

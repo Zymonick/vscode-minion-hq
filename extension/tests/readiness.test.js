@@ -40,6 +40,19 @@ function fixture(t) {
     collect: () => api.collectCi(repo, 'pr-7') };
 }
 
+test('a PR row carries the agent estimate from its working tree and ignores a malformed one', async (t) => {
+  const f = fixture(t);
+  const file = path.join(f.repo, 'docs/PR_7/cx_estimate.json');
+  assert.equal((await f.collectPr(f.repo, 'master', new Set(), null)).estimate, null);
+  fs.writeFileSync(file, JSON.stringify({ cx: 6, prompt: ' 2026-10-19 10:12 ', reason: 'x'.repeat(400) }));
+  const pr = await f.collectPr(f.repo, 'master', new Set(), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(pr.estimate)), { cx: 6, prompt: '2026-10-19 10:12', reason: 'x'.repeat(300) });
+  for (const bad of ['{', JSON.stringify({ cx: 2.5 }), JSON.stringify({ cx: '6' }), 'null']) {
+    fs.writeFileSync(file, bad);
+    assert.equal((await f.collectPr(f.repo, 'master', new Set(), null)).estimate, null, bad);
+  }
+});
+
 function issue(status, detail, action) {
   return { status, detail, owner: 'Agent', action };
 }

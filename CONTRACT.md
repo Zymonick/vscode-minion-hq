@@ -92,6 +92,13 @@ path, `head`, `mergeBase`, `cx` (the shown application rating), the
 each scored file with its exclusion. A file is rewritten only when its content
 changes and is never deleted; it rates only the revision named by `head`.
 
+A PR row also shows the agent's estimate of the smallest application
+complexity increase that the PR's requests need, as a neutral `est +N` before
+`cx` on the collapsed worktree row and the Vs master row. The agent keeps it in
+`docs/PR_N/cx_estimate.json` of the working tree: an integer `cx`, with an
+optional `prompt` time and `reason` for the tooltip. Read the file within the
+existing repository scan; a missing or malformed file shows no estimate.
+
 ## PR readiness
 
 Show one task status marker per PR using the landed Kylie's `pr_status` report.

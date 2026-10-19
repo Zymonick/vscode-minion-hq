@@ -238,7 +238,7 @@ test('PR 535 CI-only changes have a neutral total and grey file scores', () => {
   }
 });
 
-function renderComplexity(scored, collapsed) {
+function renderComplexity(scored, collapsed, pr) {
   const { complexityTotals, getHtml } = load();
   const cx = complexityTotals(scored);
   const root = { innerHTML: '' };
@@ -253,7 +253,7 @@ function renderComplexity(scored, collapsed) {
     window: { addEventListener: (_, handler) => { receive = handler; } },
   });
   receive({ data: { type: 'data', repos: [{
-    repoPath: '/repo', name: 'repo', branch: 'feature', totals: { add: 1, del: 0 },
+    repoPath: '/repo', name: 'repo', branch: 'feature', totals: { add: 1, del: 0 }, pr,
     staged: [], unstaged: [], untracked: [], commits: [],
     vsMaster: { cx, files: scored.map((s) => s.f), totals: { add: 1, del: 0 }, behind: 0, ahead: 1 },
   }] } });
@@ -283,6 +283,19 @@ test('mixed changes keep the application color and unscored changes hide the tot
   assert.doesNotMatch(renderComplexity([
     { f: { path: 'README.md' }, head: null, base: null },
   ], true), /class="cx/);
+});
+
+test('the agent estimate stands before the measured cx in collapsed and Vs master rows', () => {
+  const estimate = { cx: 4, prompt: '2026-10-19 10:12', reason: 'one new condition in views.py' };
+  for (const collapsed of [false, true]) {
+    const html = renderComplexity([
+      { f: { path: 'views.py' }, head: { complex: 12, cyclo: 9 }, base: { complex: 2, cyclo: 3 } },
+    ], collapsed, { serial: 7, label: 'pr-7', status: 'wip', estimate });
+    assert.match(html, /<span class="cx cx-estimate" title="Agent estimate of the minimal application complexity increase: \+4, after the prompt of 2026-10-19 10:12 — one new condition in views.py"><span class="cxl">est<\/span>\+4<\/span><span class="cx cx-up"/);
+  }
+  assert.doesNotMatch(renderComplexity([
+    { f: { path: 'views.py' }, head: { complex: 3, cyclo: 3 }, base: null },
+  ], true, { serial: 7, label: 'pr-7', status: 'wip', estimate: null }), /cx-estimate/);
 });
 
 test('the webview script still compiles after rendering the template literal', () => {

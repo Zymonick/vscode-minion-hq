@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const cp = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -235,15 +236,25 @@ async function collectRepo(repoPath, testing) {
     masterSha = refs[0];
     const headSha = refs[1];
     if (masterSha && headSha) {
-      const [behindOut, aheadOut, mbOut, numstatOut, nameStatusOut] = await Promise.all([
+      const [behindOut, aheadOut, mbOut] = await Promise.all([
         git(repoPath, ['rev-list', '--count', `${headSha}..${masterSha}`]),
         git(repoPath, ['rev-list', '--count', `${masterSha}..${headSha}`]),
         git(repoPath, ['merge-base', headSha, masterSha]),
-        git(repoPath, ['diff', '--numstat', '--find-renames', `${masterSha}...${headSha}`]),
-        git(repoPath, ['diff', '--name-status', '--find-renames', `${masterSha}...${headSha}`]),
+      ]);
+      const mergeBase = mbOut.trim();
+      // The branch diff runs from the merge base to the working tree, so committed
+      // and uncommitted work share one list; untracked files count as added.
+      const [numstatOut, nameStatusOut] = await Promise.all([
+        git(repoPath, ['diff', '--numstat', '--find-renames', mergeBase]),
+        git(repoPath, ['diff', '--name-status', '--find-renames', mergeBase]),
       ]);
       const files = withLetter(parseNumstat(numstatOut), parseNameStatus(nameStatusOut), 'M');
-      const mergeBase = mbOut.trim();
+      const dirty = new Set([...staged, ...unstaged].map((f) => f.path));
+      for (const f of files) {
+        if (dirty.has(f.path)) f.uncommitted = true;
+      }
+      files.push(...untracked.map((f) => ({ ...f, letter: 'A', uncommitted: true })));
+      await markLineVendors(repoPath, mergeBase, null, files.filter((f) => f.uncommitted), declarations, lineRoots);
       const renames = parseRenames(nameStatusOut);
       const dependencies = await collectDependencies(repoPath, mergeBase, headSha, files, renames).catch((e) => {
         log('dependencies: ' + path.basename(repoPath) + ': ' + e.message);
@@ -896,8 +907,9 @@ async function collectDependencies(repoPath, baseRef, headRef, files, renames) {
   for (const file of files) {
     const headVendor = vendorAt(file.path, head.roots);
     const baseVendor = vendorAt(renames[file.path] || file.path, base.roots);
-    file.vendorHead = !!headVendor;
-    file.vendorBase = !!baseVendor;
+    // Working-copy metadata may already mark an uncommitted file.
+    file.vendorHead = file.vendorHead || !!headVendor;
+    file.vendorBase = file.vendorBase || !!baseVendor;
     const vendor = headVendor || baseVendor;
     if (vendor) {
       file.vendor = vendor.name;
@@ -908,13 +920,14 @@ async function collectDependencies(repoPath, baseRef, headRef, files, renames) {
 
 // ── Complexity vs master ────────────────────────────────────────────────────
 // `qlty metrics` (https://qlty.sh) scores changed application and test files at the
-// merge base and at HEAD; the panel shows the difference, so a PR row says how
+// merge base and in the working tree; the panel shows the difference, so a PR row says how
 // much harder to read its code got, not only how much longer. qlty only runs
 // inside a git repository carrying `.qlty/qlty.toml`, and the project must stay
 // untouched, so the blobs are analysed in a private scratch repository under
 // the OS temp dir. A blob's score never changes, so each git object id is
 // scored once and kept in a cache file beside the scratch repo; a refresh with
-// nothing new costs two `git ls-tree` calls and no qlty run.
+// nothing new costs one `git ls-tree` call, reads of the changed working files
+// and no qlty run.
 const QLTY_EXTS = new Set(['py', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'java', 'rb', 'go', 'rs',
   'php', 'kt', 'kts', 'swift', 'cs', 'scala', 'c', 'cc', 'cpp', 'h', 'hpp']);
 const QLTY_CACHE_MAX = 5000;
@@ -1008,6 +1021,20 @@ async function treeBlobs(repoPath, tree, paths) {
   for (const entry of out.split('\0')) {
     const m = entry.match(/^\d+ blob ([0-9a-f]+)\t([^]*)$/);
     if (m) map.set(m[2], m[1]);
+  }
+  return map;
+}
+
+// object id and content of every listed working file; absent paths are simply
+// missing. The id is Git's blob id, so unchanged content reuses cached scores.
+async function workingBlobs(repoPath, paths) {
+  const map = new Map();
+  for (const p of paths) {
+    try {
+      const content = await fs.promises.readFile(path.join(repoPath, p));
+      const oid = crypto.createHash('sha1').update('blob ' + content.length + '\0').update(content).digest('hex');
+      map.set(p, { oid, content });
+    } catch { /* deleted or not a file */ }
   }
   return map;
 }
@@ -1145,11 +1172,11 @@ function complexityTotals(scored, renames = {}) {
   return total;
 }
 
-// Scores the branch's changed files at the merge base and at HEAD (the same
-// two sides the +/- numbers compare), adds `cx` to each scored file and returns
+// Scores the branch's changed files at the merge base and in the working tree
+// (the same two sides the +/- numbers compare), adds `cx` to each scored file and returns
 // the totals — null when qlty is unavailable or the run failed, so the column
 // simply stays away.
-async function collectComplexity(repoPath, mergeBase, files, renames, headSha, dependencies) {
+async function collectComplexity(repoPath, mergeBase, files, renames, dependencies) {
   const cmd = qltyCommandPath();
   if (!cmd || cmd === qltyMissing || !mergeBase) return null;
   const root = await qltyRoot();
@@ -1161,21 +1188,22 @@ async function collectComplexity(repoPath, mergeBase, files, renames, headSha, d
     const ext = qltyExt(f.path);
     if (!ext) continue;
     const old = renames[f.path] || f.path;
-    if (!vendorAt(f.path, dependencies?.headRoots || []) && !isMigrationPath(f.path)) {
+    if (!f.vendorHead && !vendorAt(f.path, dependencies?.headRoots || []) && !isMigrationPath(f.path)) {
       wanted.push({ f, side: 'head', path: f.path, ext });
     }
-    if (!vendorAt(old, dependencies?.baseRoots || []) && !isMigrationPath(old)) {
+    if (!f.vendorBase && !vendorAt(old, dependencies?.baseRoots || []) && !isMigrationPath(old)) {
       wanted.push({ f, side: 'base', path: old, ext: qltyExt(old) || ext });
     }
   }
   if (!wanted.length) return complexityTotals([]);
   const paths = (side) => [...new Set(wanted.filter((w) => w.side === side).map((w) => w.path))];
-  const [headIds, baseIds] = await Promise.all([
-    treeBlobs(repoPath, headSha, paths('head')),
+  const [headFiles, baseIds] = await Promise.all([
+    workingBlobs(repoPath, paths('head')),
     treeBlobs(repoPath, mergeBase, paths('base')),
   ]);
+  const working = new Map([...headFiles.values()].map((b) => [b.oid, b.content]));
   for (const w of wanted) {
-    w.oid = (w.side === 'head' ? headIds : baseIds).get(w.path) || null;
+    w.oid = (w.side === 'head' ? headFiles.get(w.path)?.oid : baseIds.get(w.path)) || null;
     w.key = w.oid ? w.oid + '.' + w.ext : null;
   }
   const cache = qltyCacheLoad(root);
@@ -1185,10 +1213,10 @@ async function collectComplexity(repoPath, mergeBase, files, renames, headSha, d
     const run = path.join(root, 'blobs', process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
     fs.mkdirSync(run, { recursive: true });
     try {
-      const blobs = await catBlobs(repoPath, [...new Set(missing.values())]);
+      const blobs = await catBlobs(repoPath, [...new Set(missing.values())].filter((oid) => !working.has(oid)));
       const names = [];
       for (const [name, oid] of missing) {
-        const content = blobs.get(oid);
+        const content = working.get(oid) || blobs.get(oid);
         if (!content) continue;
         fs.writeFileSync(path.join(run, name), content);
         names.push(path.relative(root, path.join(run, name)));
@@ -1225,9 +1253,9 @@ async function collectComplexity(repoPath, mergeBase, files, renames, headSha, d
 }
 
 // The rating a worktree row shows, as `<worktree folder>.json`, so an agent in
-// a terminal can read the number the panel shows for its HEAD. A rating depends
-// only on HEAD and the merge base, so a file is rewritten when it changes and
-// never deleted; an unscored refresh leaves the last rating in place.
+// a terminal can read the number the panel shows for its working tree; `head`
+// names the commit under it. A file is rewritten when it changes and never
+// deleted; an unscored refresh leaves the last rating in place.
 const COMPLEXITY_EXPORT_DIR = path.join(os.homedir(), '.cache', 'minion-hq', 'complexity');
 
 function exportComplexity(dir, repoPath, v) {
@@ -1287,6 +1315,7 @@ function getHtml(nonce) {
   .st-D { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .st-R, .st-C { color: var(--vscode-gitDecoration-renamedResourceForeground); }
   .behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+  .uncommitted { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
   .empty { padding: 8px; opacity: .6; }
   .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em; flex: none;
            animation: agentpulse 2s ease-in-out infinite; }
@@ -1475,7 +1504,7 @@ function fileRow(depth, repoPath, f, act, lead) {
   const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
   return row(depth, {
     name: esc(f.path.split('/').pop()),
-    dim: esc(dir),
+    dim: esc(dir) + (f.uncommitted ? ' <span class="uncommitted">uncommitted</span>' : ''),
     cols: (lead || '') + cols(f.add, f.del, f.letter, f.binary),
     act,
   });
@@ -1544,7 +1573,8 @@ function render() {
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
     let repoDim = esc(r.pr && r.pr.label ? r.pr.label : r.branch);
-    let repoCols = (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
+    // An open branch row leaves its totals to the Vs master row below it.
+    let repoCols = !r.vsMaster && (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
       repoCols = dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
@@ -1555,7 +1585,8 @@ function render() {
       btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
-    const sections = [
+    // A branch lists uncommitted work inside Vs master instead.
+    const sections = r.vsMaster ? [] : [
       ['staged', 'Staged', r.staged, false],
       ['changes', 'Changes', [...r.unstaged, ...r.untracked], false],
     ];
@@ -1577,8 +1608,9 @@ function render() {
       const behind = v.behind
         ? '<span class="behind">↓' + v.behind + ' behind master</span>'
         : 'not behind master';
+      const uncommitted = v.files.filter((f) => f.uncommitted).length;
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
-        dim: behind + ' · ↑' + v.ahead,
+        dim: behind + ' · ↑' + v.ahead + (uncommitted ? ' · <span class="uncommitted">' + uncommitted + ' uncommitted</span>' : ''),
         cols: dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
           + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false),
         act: 't|' + vid + '|0' });
@@ -2129,7 +2161,7 @@ class StatsViewProvider {
             return;
           }
           const v = d.vsMaster;
-          v.cx = await collectComplexity(d.repoPath, v.mergeBase, v.files, v.renames, v.headSha, v.vendorRoots).catch((e) => {
+          v.cx = await collectComplexity(d.repoPath, v.mergeBase, v.files, v.renames, v.vendorRoots).catch((e) => {
             log('complexity: ' + path.basename(d.repoPath) + ': ' + e.message);
             return null;
           });

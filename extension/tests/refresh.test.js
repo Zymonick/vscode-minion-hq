@@ -63,9 +63,8 @@ test('complexity waits until all basic rows are published and stays bounded', as
         vsMaster: { mergeBase: 'base', headSha: 'snapshot', files: [], renames: {}, cx: null,
           vendorRoots: { headRoots: [{ path: 'vendor/library' }], baseRoots: [] } } };
     },
-    complexity: async (repoPath, mergeBase, files, renames, headSha, vendorRoots) => {
+    complexity: async (repoPath, mergeBase, files, renames, vendorRoots) => {
       assert.equal(provider.data.size, 3, 'every row must be usable before scoring starts');
-      assert.equal(headSha, 'snapshot', 'score the revision whose diff is on screen');
       assert.equal(vendorRoots.headRoots[0].path, 'vendor/library', 'deferred scoring must retain vendor exclusions');
       await work.collect(repoPath);
       return { cognitive: 7 };
@@ -95,7 +94,7 @@ test('repository collection returns its diff without running complexity', async 
       const output = args[0] === 'rev-parse'
         ? args.includes('--abbrev-ref') ? 'feature\n' : 'master-sha\nhead-sha\n'
         : args[0] === 'merge-base' ? 'base-sha\n'
-        : args[0] === 'diff' && args.includes('master-sha...head-sha')
+        : args[0] === 'diff' && args.includes('base-sha')
           ? args.includes('--numstat') ? '2\t1\tcode.py\n' : 'M\tcode.py\n'
           : '';
       setImmediate(() => callback(null, output));

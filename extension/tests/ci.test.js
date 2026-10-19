@@ -62,7 +62,9 @@ test('master, PR, and generic worktrees show status and files without steering c
   assert.doesNotMatch(root.innerHTML, /<button\b|<input\b/);
   assert.match(root.innerHTML, /\[ready\]/);
   assert.match(root.innerHTML, /Smoke passed/);
-  assert.match(root.innerHTML, /data-act="s\|\/repos\/pr-7\|app.js"/);
-  assert.match(root.innerHTML, /data-act="w\|\/repos\/feature\|app.js"/);
+  assert.match(root.innerHTML, /data-act="s\|\/repos\/master\|app.js"/);
+  assert.match(root.innerHTML, /data-act="w\|\/repos\/master\|app.js"/);
+  assert.match(root.innerHTML, /data-act="m\|\/repos\/feature\|[^"]*\|app.js"/);
+  assert.doesNotMatch(root.innerHTML, /data-act="[sw]\|\/repos\/(?:pr-7|feature)\|/);
   assert.match(root.innerHTML, /Vs master/);
 });

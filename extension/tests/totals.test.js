@@ -149,11 +149,13 @@ test('real Git totals omit docs, CI, tests and vendors across dirty files, branc
 
   const result = await collectRepo(repo, new Set());
   assert.deepEqual(plain(result.totals), { add: 3, del: 0 });
-  assert.deepEqual(plain(result.vsMaster.totals), { add: 2, del: 1 });
+  assert.deepEqual(plain(result.vsMaster.totals), { add: 5, del: 1 }, 'Vs master reaches the working tree');
   assert.equal(result.staged.length, 7);
   assert.equal(result.unstaged.length, 7);
   assert.equal(result.untracked.length, 5);
-  assert.equal(result.vsMaster.files.length, 8);
+  assert.equal(result.vsMaster.files.length, 13);
+  assert.deepEqual(plain(result.vsMaster.files.filter((f) => !f.uncommitted).map((f) => f.path)), ['docs/nested/spec.md']);
+  assert.equal(result.vsMaster.files.find((f) => f.path === 'new.py').letter, 'A');
   assert.deepEqual(plain(result.commits.map(({ subject, add, del, files }) => ({ subject, add, del, files }))), [
     { subject: 'Docs only', add: 0, del: 0, files: 1 },
     { subject: 'Mixed change', add: 2, del: 1, files: 7 },
@@ -191,6 +193,7 @@ test('vendor line exclusions use each revision, index, and working copy metadata
   assert.deepEqual(plain(result.totals), { add: 1, del: 1 }, 'untracked metadata only excludes working additions');
   assert.equal(result.staged[0].vendorHead, false);
   assert.equal(result.unstaged[0].vendorHead, true);
+  assert.deepEqual(plain(result.vsMaster.totals), { add: 0, del: 1 }, 'uncommitted Vs master files use working-copy metadata');
 
   git('add', 'vendor/library/package.json');
   result = await collectRepo(repo, new Set());

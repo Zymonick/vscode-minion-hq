@@ -84,8 +84,7 @@ test('file lists show groups in order with sorted files and full group totals', 
   }] });
   const html = v.root.innerHTML;
   assert.deepEqual(names(html), [
-    'pr-1', 'Changes (3)', 'Scripts (1)', 'tool.py', 'Docs (2)', 'AGENTS.md', 'prompts.md',
-    'Vs master (7)', 'Code (3)', 'views2.py', 'views10.py', 'views.py', 'Migrations (1)', '0042_payee.py',
+    'pr-1', 'Vs master (7)', 'Code (3)', 'views2.py', 'views10.py', 'views.py', 'Migrations (1)', '0042_payee.py',
     'CI and tests (1)', 'tests.py', 'Scripts (1)', 'tool.py', 'Docs (1)', 'prompts.md',
   ]);
   const groupRows = html.match(/<div class="row grp"[^]*?<\/div>/g);
@@ -94,6 +93,32 @@ test('file lists show groups in order with sorted files and full group totals', 
   const migrations = groupRows.find((row) => row.includes('Migrations (1)'));
   assert.match(migrations, /class="add">\+30<\/span><span class="del">−0/);
   assert.match(html, /data-act="m\|\/a\|base\|invoice\/views2\.py"/);
+});
+
+test('Vs master holds uncommitted files, marks them, and replaces Staged and Changes', () => {
+  const v = view();
+  v.send({ type: 'data', repos: [{
+    repoPath: '/a', name: 'pr-1', branch: 'pr-1', totals: { add: 3, del: 0 },
+    staged: [{ path: 'app.py', add: 1, del: 0 }], unstaged: [{ path: 'nachorder/models.py', add: 2, del: 0 }],
+    untracked: [{ path: 'docs/PR_1/spec.md', add: 4, del: 0, letter: 'U' }],
+    vsMaster: { files: [
+      { path: 'app.py', add: 5, del: 0, letter: 'M', uncommitted: true },
+      { path: 'nachorder/models.py', add: 2, del: 0, letter: 'M', uncommitted: true },
+      { path: 'docs/PR_1/spec.md', add: 4, del: 0, letter: 'A', uncommitted: true },
+      { path: 'views.py', add: 1, del: 0, letter: 'M' },
+    ], totals: { add: 8, del: 0 }, mergeBase: 'base', behind: 0, ahead: 1 },
+    commitsLabel: 'Commits (0)', commits: [],
+  }] });
+  const html = v.root.innerHTML;
+  assert.deepEqual(names(html), [
+    'pr-1', 'Vs master (4)', 'Code (3)', 'app.py', 'models.py', 'views.py', 'Docs (1)', 'spec.md',
+  ]);
+  const rows = html.match(/<div class="row [^]*?<\/div>/g);
+  assert.match(rows.find((row) => row.includes('Vs master (4)')), /3 uncommitted/);
+  assert.doesNotMatch(rows[0], /class="add"/, 'the open branch row leaves its totals to Vs master');
+  assert.match(rows.find((row) => row.includes('>models.py<')), /nachorder <span class="uncommitted">uncommitted<\/span>/);
+  assert.doesNotMatch(rows.find((row) => row.includes('>views.py<')), /uncommitted/);
+  assert.match(html, /data-act="m\|\/a\|base\|nachorder\/models\.py"/);
 });
 
 test('groups collapse on their own and both bulk actions reopen them', () => {

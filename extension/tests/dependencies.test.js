@@ -44,7 +44,7 @@ function load(trees = {}, declarations = []) {
   const api = vm.runInContext(source + `
     gitFull = readTree;
     catBlobs = readBlobs;
-    ({ vendorLocation, vendorIdentity, vendorDeclarations, vendorAt, collectDependencies, collectComplexity, getHtml });
+    ({ vendorLocation, vendorIdentity, vendorDeclarations, vendorAt, collectDependencies, collectComplexity, workingBlobs, getHtml });
   `, context);
   return { ...api, context, reads };
 }
@@ -142,12 +142,16 @@ test('complexity scoring skips vendor sides and still scores the application ada
       scoredPaths.push([ref, [...paths]]);
       return new Map(paths.map((p) => [p, ref + p]));
     };
+    workingBlobs = async (_repo, paths) => {
+      scoredPaths.push(['working', [...paths]]);
+      return new Map(paths.map((p) => [p, { oid: 'working' + p, content: Buffer.from('') }]));
+    };
     qltyCacheLoad = () => ({ has: () => true, get: () => ({ complex: 3, cyclo: 4 }) });
   `, context);
   const vendor = { path: 'staticfiles/pdfjs-5.6.205/build/pdf.js', cx: { cognitive: 999 } };
   const adapter = { path: 'invoice/static/invoice/pdf_viewer.js' };
   const regression = { path: 'invoice/test_annotations.py' };
-  const total = await collectComplexity('/repo', 'base', [vendor, adapter, regression], {}, 'head', {
+  const total = await collectComplexity('/repo', 'base', [vendor, adapter, regression], {}, {
     baseRoots: [{ path: 'staticfiles/pdfjs-5.6.205' }], headRoots: [{ path: 'staticfiles/pdfjs-5.6.205' }],
   });
   assert.equal(vendor.cx, undefined);
@@ -157,7 +161,7 @@ test('complexity scoring skips vendor sides and still scores the application ada
   assert.ok(context.scoredPaths.every(([, paths]) => paths.length === 2 && !paths.includes(vendor.path)));
 
   const moved = { path: 'vendor/lib/adapter.js' };
-  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'app/adapter.js' }, 'head', {
+  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'app/adapter.js' }, {
     baseRoots: [], headRoots: [{ path: 'vendor/lib' }],
   });
   assert.equal(movedTotal.cognitive, -3, 'only the formerly owned application side should count');
@@ -172,11 +176,15 @@ test('complexity scoring skips migration sides', async () => {
       scoredPaths.push([ref, [...paths]]);
       return new Map(paths.map((p) => [p, ref + p]));
     };
+    workingBlobs = async (_repo, paths) => {
+      scoredPaths.push(['working', [...paths]]);
+      return new Map(paths.map((p) => [p, { oid: 'working' + p, content: Buffer.from('') }]));
+    };
     qltyCacheLoad = () => ({ has: () => true, get: () => ({ complex: 3, cyclo: 4 }) });
   `, context);
   const migration = { path: 'invoice/migrations/0042_payee.py', cx: { cognitive: 999 } };
   const views = { path: 'invoice/views.py' };
-  const total = await collectComplexity('/repo', 'base', [migration, views], {}, 'head', { baseRoots: [], headRoots: [] });
+  const total = await collectComplexity('/repo', 'base', [migration, views], {}, { baseRoots: [], headRoots: [] });
   assert.equal(migration.cx, undefined);
   assert.equal(views.cx.head, 3);
   assert.equal(total.files, 1);
@@ -184,7 +192,7 @@ test('complexity scoring skips migration sides', async () => {
   assert.ok(context.scoredPaths.every(([, paths]) => !paths.includes(migration.path)));
 
   const moved = { path: 'invoice/migrations/0043_backfill.py' };
-  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'invoice/backfill.py' }, 'head', {
+  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'invoice/backfill.py' }, {
     baseRoots: [], headRoots: [],
   });
   assert.equal(movedTotal.cognitive, -3, 'only the former application side should count');
@@ -221,6 +229,18 @@ test('expanded and collapsed rows display dependency cost without qlty and escap
   assert.match(renderDependencies([{ ...change, kind: 'removed', baseBytes: 7100000, headBytes: 0 }], true), /−1 dependency · PDF.js · 7.1 MB/);
   assert.match(renderDependencies(null, true), /Dependencies unavailable/);
   assert.doesNotMatch(renderDependencies([], true), /class="dependencies"/);
+});
+
+test('working files score under their Git blob id', async (t) => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-working-blobs-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(repo, 'views.py'), 'def view():\n    return 1\n');
+  const { workingBlobs } = load();
+  const blobs = await workingBlobs(repo, ['views.py', 'deleted.py']);
+  const oid = cp.execFileSync('git', ['hash-object', '--no-filters', 'views.py'], { cwd: repo, encoding: 'utf8' }).trim();
+  assert.equal(blobs.get('views.py').oid, oid);
+  assert.equal(blobs.get('views.py').content.toString(), 'def view():\n    return 1\n');
+  assert.equal(blobs.has('deleted.py'), false);
 });
 
 test('repository collection reads committed dependency bytes without counting dirty files', async (t) => {

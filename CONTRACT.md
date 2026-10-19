@@ -15,6 +15,16 @@ Opening a worktree row also opens its Vs master section, whatever state that
 section was left in. Collapse All and Expand All set every worktree, section,
 and commit at once; expanded commits load their files once.
 
+## Sections
+
+A worktree with a `master` comparison shows one Vs master section: the diff
+from its merge base with `master` to the working tree, including staged,
+unstaged, and untracked files. Untracked files show as added. Each file with
+uncommitted changes carries an `uncommitted` marker, and the section row
+counts them. These worktrees show no Staged or Changes section, and their
+expanded row shows no line totals. A checkout without a `master` comparison,
+such as `master` itself, shows Staged and Changes sections.
+
 ## File groups
 
 Staged, Changes, Vs master, and commit file lists show their files in groups,
@@ -46,7 +56,8 @@ types still contribute their changed lines.
 Classify additions by their destination path and revision, and deletions by
 their source path and revision, including renames. Staged changes compare
 HEAD with the index; unstaged changes compare the index with working files.
-Untracked additions use working-copy vendor metadata. Reuse immutable vendor
+Untracked additions and uncommitted Vs master additions use working-copy
+vendor metadata. Reuse immutable vendor
 metadata across refreshes; index and working metadata must remain current.
 Line totals must work without qlty. Individual file counts, file visibility,
 diffs, file counts, and commit counts retain excluded files.
@@ -86,14 +97,16 @@ Tests embedded in application files are not separated from their file's score.
 Identified vendor libraries and migration files, in a directory named
 `migrations`, stay outside both totals and show no score; each side of a rename
 is classified by its own path. Scores compare the merge
-base with the same HEAD used by the branch diff; unscored files show no score.
+base with the same working files used by the branch diff; unscored files show
+no score.
 
 Each scored refresh writes the worktree row's rating to
 `~/.cache/minion-hq/complexity/<worktree folder>.json` for agents: repository
 path, `head`, `mergeBase`, `cx` (the shown application rating), the
 `application` and `checks` totals, and the cognitive and cyclomatic change of
 each scored file with its exclusion. A file is rewritten only when its content
-changes and is never deleted; it rates only the revision named by `head`.
+changes and is never deleted; it rates the working tree, and `head` names the
+commit under it.
 
 A PR row also shows the agent's estimate of the smallest application
 complexity increase that the PR's requests need, as a neutral `est +N` before

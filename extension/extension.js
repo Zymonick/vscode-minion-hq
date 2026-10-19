@@ -1107,7 +1107,7 @@ function isMigrationPath(filePath) {
 
 // File lists show these groups in this order, each sorted by path.
 const FILE_GROUPS = [
-  ['code', 'Code'], ['migrations', 'Migrations'], ['checks', 'CI and tests'], ['scripts', 'Scripts'],
+  ['rules', 'Rules'], ['code', 'Code'], ['migrations', 'Migrations'], ['checks', 'CI and tests'], ['scripts', 'Scripts'],
   ['docs', 'Docs'], ['other', 'Other'], ['vendor', 'Vendor'],
 ];
 const CODE_EXTS = new Set([...QLTY_EXTS, 'html', 'htm', 'css', 'scss', 'sass', 'less',
@@ -1122,6 +1122,11 @@ function fileGroup(file) {
   const parts = normalized.split('/');
   const name = parts.pop();
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
+  // Agent rules lead every file list, ahead of other documentation.
+  if (/^(?:AGENTS|CLAUDE|HARD_RULES)\.md$/i.test(name)
+    || parts.some((part) => /^rules$/i.test(part)) && /^(?:md|markdown|rst)$/.test(ext)) {
+    return 'rules';
+  }
   if (parts[0] === 'docs' || /^(?:md|markdown|rst)$/.test(ext)) {
     return 'docs';
   }

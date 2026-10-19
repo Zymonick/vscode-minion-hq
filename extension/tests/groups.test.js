@@ -50,7 +50,10 @@ test('files group by kind', () => {
     ['kylie/management/commands/visual_baselines.py', 'checks'],
     ['scripts/kylie_cases.py', 'scripts'], ['deploy.sh', 'scripts'],
     ['.agents/skills/kylie-ci/scripts/check.py', 'scripts'], ['bin/tool', 'scripts'],
-    ['docs/rules/spec_ci.md', 'docs'], ['docs/PR_1/shot.png', 'docs'], ['AGENTS.md', 'docs'],
+    ['docs/rules/spec_ci.md', 'rules'], ['docs/PR_1/shot.png', 'docs'], ['AGENTS.md', 'rules'],
+    ['CLAUDE.md', 'rules'], ['HARD_RULES.md', 'rules'], ['extension/AGENTS.md', 'rules'],
+    ['docs/PR_226/spec_rules.md', 'docs'], ['docs/rules/diagram.png', 'docs'],
+    ['nachorder/templates/nachorder/stall_rules.html', 'code'],
     ['nachorder/contracts/flow.md', 'docs'], ['"docs/quoted\\tname.md"', 'docs'],
     ['requirements_prd.txt', 'other'], ['deployment/kylie.service', 'other'], ['logo.png', 'other'],
     ['contest.py', 'code'], ['scripted/view.py', 'code'],
@@ -75,6 +78,7 @@ test('file lists show groups in order with sorted files and full group totals', 
     { path: 'invoice/views2.py', add: 1, del: 0 },
     { path: 'invoice/tests.py', add: 9, del: 9 },
     { path: 'invoice/migrations/0042_payee.py', add: 30, del: 0 },
+    { path: 'docs/rules/WORKFLOW.md', add: 2, del: 1 },
   ];
   v.send({ type: 'data', repos: [{
     repoPath: '/a', name: 'pr-1', branch: 'pr-1', totals: { add: 0, del: 0 },
@@ -84,7 +88,7 @@ test('file lists show groups in order with sorted files and full group totals', 
   }] });
   const html = v.root.innerHTML;
   assert.deepEqual(names(html), [
-    'pr-1', 'Vs master (7)', 'Code (3)', 'views2.py', 'views10.py', 'views.py', 'Migrations (1)', '0042_payee.py',
+    'pr-1', 'Vs master (8)', 'Rules (1)', 'WORKFLOW.md', 'Code (3)', 'views2.py', 'views10.py', 'views.py', 'Migrations (1)', '0042_payee.py',
     'CI and tests (1)', 'tests.py', 'Scripts (1)', 'tool.py', 'Docs (1)', 'prompts.md',
   ]);
   const groupRows = html.match(/<div class="row grp"[^]*?<\/div>/g);

@@ -27,11 +27,13 @@ such as `master` itself, shows Staged and Changes sections.
 ## File groups
 
 Staged, Changes, Vs master, and commit file lists show their files in groups,
-in this order: Code, Migrations, CI and tests, Scripts, Docs, Other, Vendor. A
+in this order: Rules, Code, Migrations, CI and tests, Scripts, Docs, Other, Vendor. A
 group appears only when it has files and lists them in natural path order. Each
 file goes to the first group that matches its destination path:
 
 - Vendor: identified vendor library files on either side.
+- Rules: `AGENTS.md`, `CLAUDE.md`, and `HARD_RULES.md` files, and `.md`,
+  `.markdown`, or `.rst` files in a directory named `rules`.
 - Docs: root `docs/` files and `.md`, `.markdown`, or `.rst` files.
 - CI and tests: the CI and test paths of [Complexity](#complexity).
 - Migrations: files in a directory named `migrations`.

@@ -1122,12 +1122,14 @@ function fileGroup(file) {
   const parts = normalized.split('/');
   const name = parts.pop();
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
-  // Agent rules lead every file list, ahead of other documentation.
-  if (/^(?:AGENTS|CLAUDE|HARD_RULES)\.md$/i.test(name)
-    || parts.some((part) => /^rules$/i.test(part)) && /^(?:md|markdown|rst)$/.test(ext)) {
+  // Agent rules, skills and app contracts lead every file list, ahead of other documentation.
+  const markdown = /^(?:md|markdown|rst)$/.test(ext);
+  if (/^(?:AGENTS|CLAUDE|HARD_RULES|CONTRACT)\.md$/i.test(name)
+    || markdown && (parts.some((part) => /^(?:rules|contracts)$/i.test(part))
+      || parts[0] === '.agents' && parts[1] === 'skills')) {
     return 'rules';
   }
-  if (parts[0] === 'docs' || /^(?:md|markdown|rst)$/.test(ext)) {
+  if (parts[0] === 'docs' || markdown) {
     return 'docs';
   }
   if (isVerificationPath(normalized)) {

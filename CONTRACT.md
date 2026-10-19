@@ -32,8 +32,9 @@ group appears only when it has files and lists them in natural path order. Each
 file goes to the first group that matches its destination path:
 
 - Vendor: identified vendor library files on either side.
-- Rules: `AGENTS.md`, `CLAUDE.md`, and `HARD_RULES.md` files, and `.md`,
-  `.markdown`, or `.rst` files in a directory named `rules`.
+- Rules: `AGENTS.md`, `CLAUDE.md`, `HARD_RULES.md`, and `CONTRACT.md` files,
+  and `.md`, `.markdown`, or `.rst` files in a directory named `rules` or
+  `contracts` or under root `.agents/skills/`.
 - Docs: root `docs/` files and `.md`, `.markdown`, or `.rst` files.
 - CI and tests: the CI and test paths of [Complexity](#complexity).
 - Migrations: files in a directory named `migrations`.

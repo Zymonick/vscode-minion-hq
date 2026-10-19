@@ -30,10 +30,12 @@ function fixture(t) {
 
 function harness(childProcess = cp) {
   const commands = [], errors = [], contents = new Map(), fileSystems = new Map();
+  // The main window's group and one floating window group.
+  const groups = [{ viewColumn: 1 }, { viewColumn: 2 }];
   let provider;
   const disposable = () => ({ dispose() {} });
   const vscode = {
-    Uri, FileType: { File: 1 },
+    Uri, FileType: { File: 1 }, ViewColumn: { Active: -1 },
     FileSystemError: {
       NoPermissions: () => new Error('Read only'),
       FileNotADirectory: () => new Error('Not a directory'),
@@ -44,6 +46,7 @@ function harness(childProcess = cp) {
       executeCommand: async (...args) => { commands.push(args); },
     },
     window: {
+      tabGroups: { all: groups },
       createOutputChannel: () => ({ appendLine() {} }),
       showErrorMessage: async (message) => { errors.push(message); },
       registerWebviewViewProvider: (name, value) => { provider = value; return disposable(); },
@@ -72,8 +75,25 @@ function harness(childProcess = cp) {
     assert.ok(contents.has(uri.scheme), `unregistered scheme: ${uri.scheme}`);
     return Buffer.from(await contents.get(uri.scheme).provideTextDocumentContent(uri));
   }
-  return { provider, commands, errors, read, fileSystems };
+  return { provider, commands, errors, read, fileSystems, groups };
 }
+
+test('files and diffs open in the last editor group, so a floating window keeps the main layout', async (t) => {
+  const { repo } = fixture(t);
+  fs.writeFileSync(path.join(repo, 'file.py'), 'working\n');
+  fs.writeFileSync(path.join(repo, 'new.py'), 'new\n');
+  const h = harness();
+  await h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'file.py' });
+  assert.equal(h.commands.at(-1)[0], 'vscode.diff');
+  assert.equal(h.commands.at(-1)[4].viewColumn, 2);
+  await h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'new.py' });
+  assert.equal(h.commands.at(-1)[0], 'vscode.open');
+  assert.equal(h.commands.at(-1)[2], 2);
+  h.groups.pop();
+  await h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'file.py' });
+  assert.equal(h.commands.at(-1)[4].viewColumn, 1, 'a single group stays the target');
+  assert.deepEqual(h.errors, []);
+});
 
 test('Vs master opens the selected worktree while Git discovery and panel refresh are pending', async (t) => {
   const { repo, git, base } = fixture(t);

@@ -30,8 +30,9 @@ function fixture(t) {
   const vscode = {
     Uri: { file: (fsPath) => ({ fsPath, scheme: 'file' }) },
     ViewColumn: { Active: -1 },
-    commands: { executeCommand: async (command, target) => { opened.push([command, target.fsPath]); } },
+    commands: { executeCommand: async (command, target, column) => { opened.push([command, target.fsPath, column]); } },
     window: {
+      tabGroups: { all: [{ viewColumn: 1 }, { viewColumn: 2 }] },
       createWebviewPanel: (viewType, title, column, options) => {
         const panel = { viewType, title, column, options, revealed: 0, disposed: null, receive: null,
           webview: { html: '', cspSource: 'https://webview', asWebviewUri: (u) => uri(u.fsPath),
@@ -96,6 +97,7 @@ test('the set opens in one editor tab that loads only its own images and re-read
   assert.equal(f.panels.length, 1);
   const [panel] = f.panels;
   assert.equal(panel.title, 'pr-7 · Screenshots');
+  assert.equal(panel.column, 2, 'the tab opens in the last editor group');
   assert.deepEqual(Array.from(panel.options.localResourceRoots, (u) => u.fsPath), [f.dir]);
   const html = panel.webview.html;
   assert.match(html, /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https:\/\/webview; style-src 'unsafe-inline'; script-src 'nonce-[a-z0-9]+';">/);
@@ -110,7 +112,7 @@ test('the set opens in one editor tab that loads only its own images and re-read
   await panel.receive({ type: 'open', file: 'clicked/2-menu.png' });
   await panel.receive({ type: 'open', file: '../../kylie-worktrees/pr-7/secret.png' });
   await panel.receive({ type: 'open', file: 'shots.json' });
-  assert.deepEqual(f.opened, [['vscode.open', path.join(f.dir, 'clicked/2-menu.png')]]);
+  assert.deepEqual(f.opened, [['vscode.open', path.join(f.dir, 'clicked/2-menu.png'), 2]]);
 
   fs.rmSync(path.join(f.dir, 'clicked'), { recursive: true });
   await f.click();

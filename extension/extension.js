@@ -492,6 +492,12 @@ function shotsPage(dir, webview, nonce, title) {
   return /<\/body>/i.test(page) ? page.replace(/<\/body>/i, () => tail + '</body>') : page + tail;
 }
 
+// Minion HQ editors go to the last editor group. Floating windows follow the
+// main window's groups, so this keeps them out of the main window's layout.
+function editorColumn() {
+  return Math.max(vscode.ViewColumn.Active, ...vscode.window.tabGroups.all.map((group) => group.viewColumn));
+}
+
 // One editor tab per set; opening it again re-reads a replaced set.
 const shotPanels = new Map();
 function openShots(repo) {
@@ -500,20 +506,20 @@ function openShots(repo) {
   const title = `pr-${repo.pr.serial} · Screenshots`;
   let panel = shotPanels.get(dir);
   if (!panel) {
-    panel = vscode.window.createWebviewPanel('minionHqShots', title, vscode.ViewColumn.Active,
+    panel = vscode.window.createWebviewPanel('minionHqShots', title, editorColumn(),
       { enableScripts: true, localResourceRoots: [vscode.Uri.file(dir)] });
     shotPanels.set(dir, panel);
     panel.onDidDispose(() => shotPanels.delete(dir));
     panel.webview.onDidReceiveMessage((m) => {
       const file = m && m.type === 'open' && shotFile(dir, m.file);
       if (!file) return;
-      Promise.resolve(vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file)))
+      Promise.resolve(vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file), editorColumn()))
         .catch((error) => log('shots: ' + file + ': ' + error.message));
     });
   }
   const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
   panel.webview.html = shotsPage(dir, panel.webview, nonce, title);
-  panel.reveal();
+  panel.reveal(editorColumn());
 }
 
 // Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so
@@ -2220,25 +2226,27 @@ class StatsViewProvider {
             m.mode === 'staged' ? revisionUri(m.repoPath, '', m.path) : workingUri(m.repoPath, m.path),
           ]);
           if (m.mode === 'working' && left.scheme === EMPTY_SCHEME && right.scheme === 'file') {
-            await vscode.commands.executeCommand('vscode.open', right);
+            await vscode.commands.executeCommand('vscode.open', right, editorColumn());
           } else {
             await vscode.commands.executeCommand('vscode.diff', left, right,
-              `${base} (${m.mode === 'staged' ? 'HEAD ↔ index' : 'index ↔ working tree'})`);
+              `${base} (${m.mode === 'staged' ? 'HEAD ↔ index' : 'index ↔ working tree'})`, { viewColumn: editorColumn() });
           }
         } else if (m.mode === 'vsmaster') {
           const basePath = this.data.get(m.repoPath)?.vsMaster?.renames?.[m.path] || m.path;
           const [left, right] = await Promise.all([
             revisionUri(m.repoPath, m.mergeBase, basePath), workingUri(m.repoPath, m.path),
           ]);
-          await vscode.commands.executeCommand('vscode.diff', left, right, `${base} (master ↔ branch)`);
+          await vscode.commands.executeCommand('vscode.diff', left, right, `${base} (master ↔ branch)`,
+            { viewColumn: editorColumn() });
         } else if (m.mode === 'commit') {
           const revisions = (await readGit(m.repoPath, ['rev-list', '--parents', '-n', '1', m.hash])).toString().trim().split(' ');
           const [left, right] = await Promise.all([
             revisionUri(m.repoPath, revisions[1] || null, m.path), revisionUri(m.repoPath, revisions[0], m.path),
           ]);
-          await vscode.commands.executeCommand('vscode.diff', left, right, `${base} @ ${m.hash.slice(0, 7)}`);
+          await vscode.commands.executeCommand('vscode.diff', left, right, `${base} @ ${m.hash.slice(0, 7)}`,
+            { viewColumn: editorColumn() });
         } else {
-          await vscode.commands.executeCommand('vscode.open', uri);
+          await vscode.commands.executeCommand('vscode.open', uri, editorColumn());
         }
       } catch (error) {
         log('open: ' + m.repoPath + '/' + m.path + ': ' + error.message);

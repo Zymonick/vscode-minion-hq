@@ -230,6 +230,12 @@ images. The tab loads resources only from the set folder and runs only its own
 script; links outside the set go nowhere. Clicking an image opens that file
 full size in an editor. A later click re-reads the set and reuses an open tab.
 
+## Editor placement
+
+Files, diffs, images, and screenshot tabs open in the last editor group.
+Floating editor windows hold the last groups, so these editors open there and
+leave the main window's layout unchanged.
+
 ## Installation
 
 Deployment scripts and installer tests must support Python 3.8, including

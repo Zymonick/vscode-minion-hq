@@ -98,6 +98,7 @@ complexity increase that the PR's requests need, as a neutral `est +N` before
 `docs/PR_N/cx_estimate.json` of the working tree: an integer `cx`, with an
 optional `prompt` time and `reason` for the tooltip. Read the file within the
 existing repository scan; a missing or malformed file shows no estimate.
+A measured application `cx` above the estimate shows in red in both rows.
 
 ## PR readiness
 

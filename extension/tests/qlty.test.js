@@ -291,11 +291,23 @@ test('the agent estimate stands before the measured cx in collapsed and Vs maste
     const html = renderComplexity([
       { f: { path: 'views.py' }, head: { complex: 12, cyclo: 9 }, base: { complex: 2, cyclo: 3 } },
     ], collapsed, { serial: 7, label: 'pr-7', status: 'wip', estimate });
-    assert.match(html, /<span class="cx cx-estimate" title="Agent estimate of the minimal application complexity increase: \+4, after the prompt of 2026-10-19 10:12 — one new condition in views.py"><span class="cxl">est<\/span>\+4<\/span><span class="cx cx-up"/);
+    assert.match(html, /<span class="cx cx-estimate" title="Agent estimate of the minimal application complexity increase: \+4, after the prompt of 2026-10-19 10:12 — one new condition in views.py"><span class="cxl">est<\/span>\+4<\/span><span class="cx cx-over"/);
   }
   assert.doesNotMatch(renderComplexity([
     { f: { path: 'views.py' }, head: { complex: 3, cyclo: 3 }, base: null },
   ], true, { serial: 7, label: 'pr-7', status: 'wip', estimate: null }), /cx-estimate/);
+});
+
+test('a measured cx above the agent estimate turns red; at or below it keeps its color', () => {
+  const pr = (cx) => ({ serial: 7, label: 'pr-7', status: 'wip', estimate: { cx, prompt: '', reason: '' } });
+  const views = [{ f: { path: 'views.py' }, head: { complex: 5, cyclo: 4 }, base: { complex: 2, cyclo: 3 } }];
+  for (const collapsed of [false, true]) {
+    assert.match(renderComplexity(views, collapsed, pr(2)), /<span class="cx cx-over" title="[^"]*; above the agent estimate \+2"><span class="cxl">cx<\/span>\+3/);
+    assert.match(renderComplexity(views, collapsed, pr(3)), /<span class="cx cx-up" title="[^"]*HEAD"><span class="cxl">cx<\/span>\+3/);
+    assert.doesNotMatch(renderComplexity([
+      { f: { path: 'tests/test_views.py' }, head: { complex: 9, cyclo: 4 }, base: null },
+    ], collapsed, pr(0)), /cx-over/);
+  }
 });
 
 test('the webview script still compiles after rendering the template literal', () => {

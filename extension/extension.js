@@ -1261,6 +1261,7 @@ function getHtml(nonce) {
   .cxl { opacity: .55; font-size: .85em; margin-right: 3px; }
   .cx-up { color: var(--vscode-charts-orange, #d18616); }
   .cx-down { color: var(--vscode-charts-green, #89d185); }
+  .cx-over { color: var(--vscode-charts-red, #f14c4c); }
   .cx-zero { opacity: .6; }
   .cx-excluded, .cx-estimate { color: var(--vscode-descriptionForeground, #999); }
   .dependencies { font-size: .85em; margin-right: 8px; overflow: hidden; text-overflow: ellipsis; }
@@ -1373,11 +1374,12 @@ function cols(add, del, letter, binary) {
 // undefined → no cell (the branch was not scored), null → an empty cell (a file
 // qlty does not score) so the +/- columns keep their place.
 function signed(v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v); }
-function cxCell(cx) {
+function cxCell(cx, estimate) {
   if (cx === undefined) return '';
   if (!cx) return '<span class="cx"></span>';
   const n = cx.cognitive;
-  const cls = cx.excluded ? 'cx-excluded' : n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
+  const over = !cx.excluded && estimate && n > estimate.cx;
+  const cls = cx.excluded ? 'cx-excluded' : over ? 'cx-over' : n > 0 ? 'cx-up' : n < 0 ? 'cx-down' : 'cx-zero';
   const label = cx.excluded ? 'CI and test' : 'Application';
   let tip = label + ' cognitive complexity ' + cx.base + ' → ' + cx.head + ' (' + signed(n) + '), cyclomatic '
     + signed(cx.cyclo);
@@ -1389,6 +1391,7 @@ function cxCell(cx) {
     tip += ' (excluded from application total)';
   }
   tip += ' — qlty metrics, merge base vs HEAD';
+  if (over) tip += '; above the agent estimate ' + signed(estimate.cx);
   return '<span class="cx ' + cls + '" title="' + esc(tip) + '"><span class="cxl">cx</span>' + signed(n) + '</span>';
 }
 
@@ -1524,7 +1527,7 @@ function render() {
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
       repoCols = dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
-        + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false);
+        + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
     h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
@@ -1556,7 +1559,7 @@ function render() {
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
         cols: dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
-          + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined) + cols(v.totals.add, v.totals.del, null, false),
+          + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false),
         act: 't|' + vid + '|0' });
       if (!vc) h += groupedFiles(2, r.repoPath, 'vsmaster', v.files,
         (depth, f) => fileRow(depth, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,

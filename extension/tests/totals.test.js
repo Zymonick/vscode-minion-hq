@@ -50,13 +50,14 @@ test('all totals share complexity exclusions while application templates and too
     'scripts/ci', 'scripts/audit_runner.py', 'scripts/ci_settings.py',
     'kylie/tests_visual/engine.py', 'kylie/management/commands/visual_baselines.py',
     '.github/workflows/ci.yml', '"tests/quoted\\tname.py"',
+    'invoice/migrations/0042_payee.py', 'invoice/migrations/__init__.py', '"invoice/migrations/0043_n\\303\\244me.py"',
   ].map((path) => ({ path, add: 100, del: 50 }));
   const application = [
     'invoice/views.py', 'invoice/templates/invoice/list.html',
     'invoice/static/invoice/style.css', 'scripts/kylie_cases.py',
-    'contest.py', 'invoice/audit_runner.py',
+    'contest.py', 'invoice/audit_runner.py', 'patient/reshipment_status_migration.py',
   ].map((path) => ({ path, add: 2, del: 1 }));
-  assert.deepEqual(plain(sumFiles([...excluded, ...application])), { add: 12, del: 6 });
+  assert.deepEqual(plain(sumFiles([...excluded, ...application])), { add: 14, del: 7 });
   assert.deepEqual(plain(sumFiles(excluded)), { add: 0, del: 0 });
   assert.equal(excluded[0].add, 100);
 });
@@ -68,6 +69,8 @@ test('renamed line additions and deletions use their own side of the exclusions'
     ['tests/helper.py', 'app/helper.py', { add: 7, del: 0 }],
     ['app/helper.py', 'scripts/audit_runner.py', { add: 0, del: 3 }],
     ['scripts/audit_runner.py', 'app/helper.py', { add: 7, del: 0 }],
+    ['app/helper.py', 'app/migrations/0002_data.py', { add: 0, del: 3 }],
+    ['app/migrations/0002_data.py', 'app/helper.py', { add: 7, del: 0 }],
   ]) {
     assert.deepEqual(plain(sumFiles(parseNumstat(`7\t3\t${oldPath} => ${newPath}`))), expected);
   }

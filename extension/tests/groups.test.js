@@ -54,6 +54,10 @@ test('files group by kind', () => {
     ['nachorder/contracts/flow.md', 'docs'], ['"docs/quoted\\tname.md"', 'docs'],
     ['requirements_prd.txt', 'other'], ['deployment/kylie.service', 'other'], ['logo.png', 'other'],
     ['contest.py', 'code'], ['scripted/view.py', 'code'],
+    ['invoice/migrations/0042_payee.py', 'migrations'], ['invoice/migrations/__init__.py', 'migrations'],
+    ['app\\migrations\\0001_initial.py', 'migrations'], ['tests/migrations/0001_initial.py', 'checks'],
+    ['scripts/land_migrations.py', 'checks'], ['patient/reshipment_status_migration.py', 'code'],
+    ['invoice/migrations.py', 'code'],
   ]) {
     assert.equal(fileGroup({ path: file }), group, file);
   }
@@ -70,6 +74,7 @@ test('file lists show groups in order with sorted files and full group totals', 
     { path: 'invoice/views10.py', add: 1, del: 0 },
     { path: 'invoice/views2.py', add: 1, del: 0 },
     { path: 'invoice/tests.py', add: 9, del: 9 },
+    { path: 'invoice/migrations/0042_payee.py', add: 30, del: 0 },
   ];
   v.send({ type: 'data', repos: [{
     repoPath: '/a', name: 'pr-1', branch: 'pr-1', totals: { add: 0, del: 0 },
@@ -80,11 +85,14 @@ test('file lists show groups in order with sorted files and full group totals', 
   const html = v.root.innerHTML;
   assert.deepEqual(names(html), [
     'pr-1', 'Changes (3)', 'Scripts (1)', 'tool.py', 'Docs (2)', 'AGENTS.md', 'prompts.md',
-    'Vs master (6)', 'Code (3)', 'views2.py', 'views10.py', 'views.py', 'CI and tests (1)', 'tests.py',
-    'Scripts (1)', 'tool.py', 'Docs (1)', 'prompts.md',
+    'Vs master (7)', 'Code (3)', 'views2.py', 'views10.py', 'views.py', 'Migrations (1)', '0042_payee.py',
+    'CI and tests (1)', 'tests.py', 'Scripts (1)', 'tool.py', 'Docs (1)', 'prompts.md',
   ]);
-  const docs = html.match(/<div class="row grp"[^]*?<\/div>/g).find((row) => row.includes('Docs (1)'));
+  const groupRows = html.match(/<div class="row grp"[^]*?<\/div>/g);
+  const docs = groupRows.find((row) => row.includes('Docs (1)'));
   assert.match(docs, /class="add">\+40<\/span><span class="del">−0/);
+  const migrations = groupRows.find((row) => row.includes('Migrations (1)'));
+  assert.match(migrations, /class="add">\+30<\/span><span class="del">−0/);
   assert.match(html, /data-act="m\|\/a\|base\|invoice\/views2\.py"/);
 });
 

@@ -163,6 +163,33 @@ test('complexity scoring skips vendor sides and still scores the application ada
   assert.equal(movedTotal.cognitive, -3, 'only the formerly owned application side should count');
 });
 
+test('complexity scoring skips migration sides', async () => {
+  const { context, collectComplexity } = load();
+  vm.runInContext(`
+    qltyRoot = async () => '/scratch';
+    var scoredPaths = [];
+    treeBlobs = async (_repo, ref, paths) => {
+      scoredPaths.push([ref, [...paths]]);
+      return new Map(paths.map((p) => [p, ref + p]));
+    };
+    qltyCacheLoad = () => ({ has: () => true, get: () => ({ complex: 3, cyclo: 4 }) });
+  `, context);
+  const migration = { path: 'invoice/migrations/0042_payee.py', cx: { cognitive: 999 } };
+  const views = { path: 'invoice/views.py' };
+  const total = await collectComplexity('/repo', 'base', [migration, views], {}, 'head', { baseRoots: [], headRoots: [] });
+  assert.equal(migration.cx, undefined);
+  assert.equal(views.cx.head, 3);
+  assert.equal(total.files, 1);
+  assert.equal(total.checks.files, 0);
+  assert.ok(context.scoredPaths.every(([, paths]) => !paths.includes(migration.path)));
+
+  const moved = { path: 'invoice/migrations/0043_backfill.py' };
+  const movedTotal = await collectComplexity('/repo', 'base', [moved], { [moved.path]: 'invoice/backfill.py' }, 'head', {
+    baseRoots: [], headRoots: [],
+  });
+  assert.equal(movedTotal.cognitive, -3, 'only the former application side should count');
+});
+
 function renderDependencies(dependencies, collapsed) {
   const script = load().getHtml('N').match(/<script nonce="N">([^]*)<\/script>/)[1];
   const root = { innerHTML: '' };

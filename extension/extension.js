@@ -161,7 +161,7 @@ function parseRenames(out) {
 function isExcludedLinePath(filePath) {
   // Git quotes paths containing non-ASCII or special characters.
   const normalized = filePath.replace(/^"|"$/g, '');
-  return normalized.startsWith('docs/') || isVerificationPath(normalized);
+  return normalized.startsWith('docs/') || isVerificationPath(normalized) || isMigrationPath(normalized);
 }
 
 function sumFiles(files) {
@@ -1067,9 +1067,14 @@ function isVerificationPath(filePath) {
     || /(?:Test|Tests|TestCase|Spec|Specs)\.[^.]+$/.test(name);
 }
 
+// Generated schema history stays outside line totals and complexity.
+function isMigrationPath(filePath) {
+  return filePath.replace(/\\/g, '/').split('/').slice(0, -1).some((part) => /^migrations$/i.test(part));
+}
+
 // File lists show these groups in this order, each sorted by path.
 const FILE_GROUPS = [
-  ['code', 'Code'], ['checks', 'CI and tests'], ['scripts', 'Scripts'],
+  ['code', 'Code'], ['migrations', 'Migrations'], ['checks', 'CI and tests'], ['scripts', 'Scripts'],
   ['docs', 'Docs'], ['other', 'Other'], ['vendor', 'Vendor'],
 ];
 const CODE_EXTS = new Set([...QLTY_EXTS, 'html', 'htm', 'css', 'scss', 'sass', 'less',
@@ -1089,6 +1094,9 @@ function fileGroup(file) {
   }
   if (isVerificationPath(normalized)) {
     return 'checks';
+  }
+  if (isMigrationPath(normalized)) {
+    return 'migrations';
   }
   if (parts.some((part) => /^(?:scripts?|bin)$/i.test(part)) || /^(?:sh|bash|zsh|ps1|bat|cmd)$/.test(ext)) {
     return 'scripts';
@@ -1147,10 +1155,10 @@ async function collectComplexity(repoPath, mergeBase, files, renames, headSha, d
     const ext = qltyExt(f.path);
     if (!ext) continue;
     const old = renames[f.path] || f.path;
-    if (!vendorAt(f.path, dependencies?.headRoots || [])) {
+    if (!vendorAt(f.path, dependencies?.headRoots || []) && !isMigrationPath(f.path)) {
       wanted.push({ f, side: 'head', path: f.path, ext });
     }
-    if (!vendorAt(old, dependencies?.baseRoots || [])) {
+    if (!vendorAt(old, dependencies?.baseRoots || []) && !isMigrationPath(old)) {
       wanted.push({ f, side: 'base', path: old, ext: qltyExt(old) || ext });
     }
   }
@@ -1669,6 +1677,7 @@ const CI_SUPPORT_PATHS = new Set(${JSON.stringify([...CI_SUPPORT_PATHS])});
 const FILE_GROUPS = ${JSON.stringify(FILE_GROUPS)};
 const CODE_EXTS = new Set(${JSON.stringify([...CODE_EXTS])});
 ${isVerificationPath.toString()}
+${isMigrationPath.toString()}
 ${fileGroup.toString()}
 ${isExcludedLinePath.toString()}
 ${sumFiles.toString()}

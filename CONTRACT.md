@@ -18,13 +18,14 @@ and commit at once; expanded commits load their files once.
 ## File groups
 
 Staged, Changes, Vs master, and commit file lists show their files in groups,
-in this order: Code, CI and tests, Scripts, Docs, Other, Vendor. A group
-appears only when it has files and lists them in natural path order. Each file
-goes to the first group that matches its destination path:
+in this order: Code, Migrations, CI and tests, Scripts, Docs, Other, Vendor. A
+group appears only when it has files and lists them in natural path order. Each
+file goes to the first group that matches its destination path:
 
 - Vendor: identified vendor library files on either side.
 - Docs: root `docs/` files and `.md`, `.markdown`, or `.rst` files.
 - CI and tests: the CI and test paths of [Complexity](#complexity).
+- Migrations: files in a directory named `migrations`.
 - Scripts: files in a `script`, `scripts`, or `bin` directory, and shell or
   batch files.
 - Code: source, template, and style files.
@@ -37,8 +38,8 @@ All reopen every group, so an opened section shows its files.
 ## Line totals
 
 Worktree, Staged, Changes, Vs master, collapsed worktree, and commit line totals
-exclude root `docs/` files and the same CI, test, and identified vendor paths
-as application complexity. Reuse the complexity path classifier and vendor
+exclude root `docs/` files and the same CI, test, migration, and identified
+vendor paths as application complexity. Reuse the complexity path classifier and vendor
 identification rules. Application templates, styles, and other unscored file
 types still contribute their changed lines.
 
@@ -82,7 +83,9 @@ these paths remains counted, including application CLI code. Directory or file
 names that merely contain `ci`, `test`, or `audit` do not establish an exclusion.
 Tests embedded in application files are not separated from their file's score.
 
-Identified vendor libraries stay outside both totals. Scores compare the merge
+Identified vendor libraries and migration files, in a directory named
+`migrations`, stay outside both totals and show no score; each side of a rename
+is classified by its own path. Scores compare the merge
 base with the same HEAD used by the branch diff; unscored files show no score.
 
 Each scored refresh writes the worktree row's rating to

@@ -95,7 +95,7 @@ test('file lists show groups in order with sorted files and full group totals', 
   assert.match(html, /data-act="m\|\/a\|base\|invoice\/views2\.py"/);
 });
 
-test('Vs master holds uncommitted files, marks them, and replaces Staged and Changes', () => {
+test('Vs master holds uncommitted files without a marker and replaces Staged and Changes', () => {
   const v = view();
   v.send({ type: 'data', repos: [{
     repoPath: '/a', name: 'pr-1', branch: 'pr-1', totals: { add: 3, del: 0 },
@@ -114,10 +114,8 @@ test('Vs master holds uncommitted files, marks them, and replaces Staged and Cha
     'pr-1', 'Vs master (4)', 'Code (3)', 'app.py', 'models.py', 'views.py', 'Docs (1)', 'spec.md',
   ]);
   const rows = html.match(/<div class="row [^]*?<\/div>/g);
-  assert.match(rows.find((row) => row.includes('Vs master (4)')), /3 uncommitted/);
   assert.doesNotMatch(rows[0], /class="add"/, 'the open branch row leaves its totals to Vs master');
-  assert.match(rows.find((row) => row.includes('>models.py<')), /nachorder <span class="uncommitted">uncommitted<\/span>/);
-  assert.doesNotMatch(rows.find((row) => row.includes('>views.py<')), /uncommitted/);
+  assert.doesNotMatch(html, /uncommitted/);
   assert.match(html, /data-act="m\|\/a\|base\|nachorder\/models\.py"/);
 });
 

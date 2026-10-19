@@ -1315,7 +1315,6 @@ function getHtml(nonce) {
   .st-D { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .st-R, .st-C { color: var(--vscode-gitDecoration-renamedResourceForeground); }
   .behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
-  .uncommitted { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
   .empty { padding: 8px; opacity: .6; }
   .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em; flex: none;
            animation: agentpulse 2s ease-in-out infinite; }
@@ -1504,7 +1503,7 @@ function fileRow(depth, repoPath, f, act, lead) {
   const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
   return row(depth, {
     name: esc(f.path.split('/').pop()),
-    dim: esc(dir) + (f.uncommitted ? ' <span class="uncommitted">uncommitted</span>' : ''),
+    dim: esc(dir),
     cols: (lead || '') + cols(f.add, f.del, f.letter, f.binary),
     act,
   });
@@ -1608,9 +1607,8 @@ function render() {
       const behind = v.behind
         ? '<span class="behind">↓' + v.behind + ' behind master</span>'
         : 'not behind master';
-      const uncommitted = v.files.filter((f) => f.uncommitted).length;
       h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
-        dim: behind + ' · ↑' + v.ahead + (uncommitted ? ' · <span class="uncommitted">' + uncommitted + ' uncommitted</span>' : ''),
+        dim: behind + ' · ↑' + v.ahead,
         cols: dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
           + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false),
         act: 't|' + vid + '|0' });

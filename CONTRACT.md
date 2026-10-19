@@ -19,9 +19,8 @@ and commit at once; expanded commits load their files once.
 
 A worktree with a `master` comparison shows one Vs master section: the diff
 from its merge base with `master` to the working tree, including staged,
-unstaged, and untracked files. Untracked files show as added. Each file with
-uncommitted changes carries an `uncommitted` marker, and the section row
-counts them. These worktrees show no Staged or Changes section, and their
+unstaged, and untracked files. Untracked files show as added. No row marks
+whether a file is committed. These worktrees show no Staged or Changes section, and their
 expanded row shows no line totals. A checkout without a `master` comparison,
 such as `master` itself, shows Staged and Changes sections.
 

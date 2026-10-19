@@ -130,6 +130,12 @@ appears as a neutral `(->pr-M)` marker before the custom label, as in the
 session title. A missing or malformed file, or one that names the PR itself,
 adds no marker.
 
+An optional `conflicts` list in the `pr_status` report names the open PRs whose
+own changes conflict with this PR's. It appears as a warning-coloured
+`conflicts 802, 805` marker after the custom label and before the task status.
+An empty or missing list adds no marker, a landed row shows none, and a list
+with anything other than positive integers makes the report malformed.
+
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.

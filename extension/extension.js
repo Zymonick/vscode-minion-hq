@@ -591,6 +591,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
     statusLabel, customLabel: readiness && readiness.customLabel, origin,
+    conflicts: (readiness && readiness.conflicts) || [],
     shots: shotsSummary(repoPath, serial), estimate: estimateSummary(repoPath, serial) } : null;
 }
 
@@ -620,6 +621,8 @@ function validCiReport(report) {
     && Array.isArray(report.issues) && report.issues.every((issue) => issue && typeof issue === 'object'
       && ['status', 'detail', 'owner', 'action'].every((key) => typeof issue[key] === 'string' && issue[key]))
     && (report.display_label === undefined || typeof report.display_label === 'string')
+    && (report.conflicts === undefined || Array.isArray(report.conflicts)
+      && report.conflicts.every((serial) => Number.isInteger(serial) && serial > 0))
     && Array.isArray(report.operator_steps) && report.operator_steps.every((step) => typeof step === 'string' && step);
 }
 
@@ -663,7 +666,7 @@ async function collectCi(repoPath, branch) {
     return {
       serial, state: report.status.split(':')[0].split(' (')[0].replace(/ /g, '-'),
       statusLabel: report.status, customLabel: report.display_label || '', reason: details.join('\n'),
-      checkLabel: report.checks, reviewLabel: report.review,
+      checkLabel: report.checks, reviewLabel: report.review, conflicts: report.conflicts || [],
     };
   } catch (error) {
     return { serial, state: 'status-unavailable', statusLabel: 'status unavailable',
@@ -1278,8 +1281,9 @@ function getHtml(nonce) {
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .shots { color: var(--vscode-charts-green, #89d185); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .claude:hover, .codex:hover, .shots:hover { opacity: 1; }
-  .prst, .pr-origin, .pr-custom-label { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
+  .prst, .pr-origin, .pr-custom-label, .pr-conflicts { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
   .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
+  .pr-conflicts { color: var(--vscode-editorWarning-foreground, #cca700); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
   .prst-blocked, .prst-checks-outdated, .prst-checks-missing, .prst-agent-sign-off-missing,
@@ -1330,7 +1334,10 @@ function prTag(pr, ci) {
   const custom = pr.customLabel
     ? '<span class="pr-custom-label" title="Custom label: ' + esc(pr.customLabel) + '">[' + esc(pr.customLabel) + ']</span>'
     : '';
-  return origin + custom + '<span class="prst prst-' + esc(pr.status) + '" title="'
+  const conflicts = pr.status !== 'landed' && pr.conflicts && pr.conflicts.length
+    ? '<span class="pr-conflicts" title="Text conflict with open PRs">conflicts ' + esc(pr.conflicts.join(', ')) + '</span>'
+    : '';
+  return origin + custom + conflicts + '<span class="prst prst-' + esc(pr.status) + '" title="'
     + esc(reason) + '">[' + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }

@@ -467,11 +467,23 @@ function unescHtml(s) {
     { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", '#x27': "'" }[name]));
 }
 
-// CI's index.html with its relative image links loading through the webview,
-// followed by any image it does not show, such as clicked states. The policy
-// blocks everything else; a click opens the image full size in an editor.
-function shotsPage(dir, webview, nonce, title) {
-  const uri = (file) => escHtml(webview.asWebviewUri(vscode.Uri.file(file)).toString());
+// A Windows path as a file URL: \\wsl.localhost\Ubuntu\x → file://wsl.localhost/Ubuntu/x.
+function windowsFileUrl(winPath) {
+  const parts = winPath.split('\\').map((part) => /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part));
+  return (winPath.startsWith('\\\\') ? 'file:' : 'file:///') + parts.join('/');
+}
+
+function windowsPath(p) {
+  return new Promise((resolve, reject) => {
+    cp.execFile('wslpath', ['-w', p], (err, stdout) => err ? reject(err) : resolve(stdout.trim()));
+  });
+}
+
+// CI's index.html with its relative image links pointing into the set folder
+// at dirUrl, followed by any image it does not show, such as clicked states.
+// The policy blocks everything else; a click opens the image full size.
+function shotsPage(dir, dirUrl, title) {
+  const uri = (file) => escHtml(dirUrl + '/' + path.relative(dir, file).split(path.sep).map(encodeURIComponent).join('/'));
   let page;
   try {
     page = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
@@ -485,22 +497,18 @@ function shotsPage(dir, webview, nonce, title) {
     const file = shotFile(dir, rel);
     if (!file) return attr === 'href' ? 'href="#"' : all;
     shown.add(path.relative(dir, file).split(path.sep).join('/'));
-    return attr + '="' + uri(file) + '"' + (attr === 'href' ? ' data-file="' + escHtml(rel) + '"' : '');
+    return attr + '="' + uri(file) + '"';
   });
   const others = shotImages(dir).filter((rel) => !shown.has(rel));
   const extra = others.length ? '<section class="minion-other"><h2>Other screenshots</h2>' + others.map((rel) => {
     const file = path.join(dir, rel);
-    return '<figure><figcaption>' + escHtml(rel) + '</figcaption><a href="' + uri(file) + '" data-file="'
-      + escHtml(rel) + '"><img src="' + uri(file) + '" alt="' + escHtml(rel) + '" loading="lazy"></a></figure>';
+    return '<figure><figcaption>' + escHtml(rel) + '</figcaption><a href="' + uri(file) + '"><img src="'
+      + uri(file) + '" alt="' + escHtml(rel) + '" loading="lazy"></a></figure>';
   }).join('') + '</section>' : '';
-  const head = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src '
-    + webview.cspSource + '; style-src \'unsafe-inline\'; script-src \'nonce-' + nonce + '\';">'
+  const head = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src file:; style-src \'unsafe-inline\';">'
     + '<style>.minion-other figure { margin: 16px 0; } .minion-other img { width: auto; max-width: 100%; }</style>';
-  const tail = extra + '<script nonce="' + nonce + '">const vscode = acquireVsCodeApi();'
-    + 'document.addEventListener("click", (ev) => { const link = ev.target.closest("a"); if (!link) return;'
-    + ' ev.preventDefault(); if (link.dataset.file) vscode.postMessage({ type: "open", file: link.dataset.file }); });</script>';
   page = /<head\b[^>]*>/i.test(page) ? page.replace(/<head\b[^>]*>/i, (tag) => tag + head) : head + page;
-  return /<\/body>/i.test(page) ? page.replace(/<\/body>/i, () => tail + '</body>') : page + tail;
+  return /<\/body>/i.test(page) ? page.replace(/<\/body>/i, () => extra + '</body>') : page + extra;
 }
 
 // Minion HQ editors go to the last editor group. Floating windows follow the
@@ -509,28 +517,22 @@ function editorColumn() {
   return Math.max(vscode.ViewColumn.Active, ...vscode.window.tabGroups.all.map((group) => group.viewColumn));
 }
 
-// One editor tab per set; opening it again re-reads a replaced set.
-const shotPanels = new Map();
-function openShots(repo) {
+// Windows Chrome shows a set; WSL interop starts it and leaves it running.
+const CHROME = '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe';
+
+// Each click re-reads the set into a scratch page and opens it in a Chrome tab.
+async function openShots(repo) {
   const dir = shotsDir(repo.repoPath, repo.pr.serial);
   if (!shotImages(dir).length) throw new Error('no screenshots in ' + dir);
-  const title = `pr-${repo.pr.serial} · Screenshots`;
-  let panel = shotPanels.get(dir);
-  if (!panel) {
-    panel = vscode.window.createWebviewPanel('minionHqShots', title, editorColumn(),
-      { enableScripts: true, localResourceRoots: [vscode.Uri.file(dir)] });
-    shotPanels.set(dir, panel);
-    panel.onDidDispose(() => shotPanels.delete(dir));
-    panel.webview.onDidReceiveMessage((m) => {
-      const file = m && m.type === 'open' && shotFile(dir, m.file);
-      if (!file) return;
-      Promise.resolve(vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file), editorColumn()))
-        .catch((error) => log('shots: ' + file + ': ' + error.message));
-    });
-  }
-  const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-  panel.webview.html = shotsPage(dir, panel.webview, nonce, title);
-  panel.reveal(editorColumn());
+  const page = path.join(os.tmpdir(), 'minion-hq-shots', 'PR_' + repo.pr.serial + '.html');
+  fs.mkdirSync(path.dirname(page), { recursive: true });
+  fs.writeFileSync(page, shotsPage(dir, windowsFileUrl(await windowsPath(dir)), `pr-${repo.pr.serial} · Screenshots`));
+  const target = await windowsPath(page);
+  await new Promise((resolve, reject) => {
+    const child = cp.spawn(CHROME, [target], { detached: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('spawn', () => { child.unref(); resolve(); });
+  });
 }
 
 // Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so
@@ -1592,7 +1594,7 @@ function render() {
       + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
       + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Codex">'
       + '<path d="m3 4 4 4-4 4m6 0h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : '';
-    // A PR with a screenshot set opens it in an editor tab.
+    // A PR with a screenshot set opens it in Chrome.
     const shots = r.pr && r.pr.shots;
     const shotsHtml = shots ? '<span class="shots" data-shots="' + esc(r.repoPath) + '" title="'
       + esc('Screenshots of ' + r.name + ': ' + shots.images + (shots.images === 1 ? ' image' : ' images')
@@ -2271,7 +2273,7 @@ class StatsViewProvider {
       const repo = this.data.get(m.repoPath);
       if (!repo || !repo.pr) return;
       try {
-        openShots(repo);
+        await openShots(repo);
       } catch (error) {
         log('shots: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open the screenshots of ${repo.name}: ${error.message}`);

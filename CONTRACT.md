@@ -251,17 +251,18 @@ folder, or one of its direct subfolders, holds a PNG, WebP, JPEG or GIF image.
 Its tooltip gives the image count and the `taken` time of `shots.json`, when
 present. Detect the set within the existing repository scan; add no polling.
 
-Clicking the control opens one editor tab per PR, named `pr-N · Screenshots`,
-and never toggles the row. The tab shows CI's `index.html` with its relative
-image links loaded from the set folder, then every image of the set the page
-does not show, in natural path order. Without `index.html` it shows all
-images. The tab loads resources only from the set folder and runs only its own
+Clicking the control opens the set in a new tab of Windows Chrome and never
+toggles the row. Each click re-reads the set into a page in the extension
+host's temporary folder; the set folder stays unchanged. The page shows CI's
+`index.html` with its relative image links pointing into the set folder, then
+every image of the set the page does not show, in natural path order. Without
+`index.html` it shows all images. The page loads only images and runs no
 script; links outside the set go nowhere. Clicking an image opens that file
-full size in an editor. A later click re-reads the set and reuses an open tab.
+full size in Chrome. A missing set or Chrome shows an error.
 
 ## Editor placement
 
-Files, diffs, images, and screenshot tabs open in the last editor group.
+Files, diffs, and images open in the last editor group.
 Floating editor windows hold the last groups, so these editors open there and
 leave the main window's layout unchanged.
 

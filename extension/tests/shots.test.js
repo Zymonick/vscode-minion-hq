@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const cp = require('node:child_process');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -25,35 +27,42 @@ function fixture(t) {
     + '<figure><a href="after/01-a-desktop.webp"><img src="after/01-a-desktop.webp" alt="Nachher"></a></figure>\n'
     + '<a href="../../kylie-worktrees/pr-7/secret.png">x</a><script>alert(1)</script>\n</body>\n</html>\n');
 
-  const panels = [], opened = [], errors = [];
-  const uri = (fsPath) => ({ fsPath, toString: () => 'https://webview/' + fsPath });
+  // wslpath maps the WSL root to the distro's share; Chrome starts unless chromeError is set.
+  const panels = [], spawned = [], errors = [];
+  const state = { chromeError: null };
+  const childProcess = { ...cp,
+    execFile: (file, args, ...rest) => file === 'wslpath'
+      ? rest[rest.length - 1](null, '\\\\wsl.localhost\\Ubuntu' + args[1].replace(/\//g, '\\') + '\n')
+      : cp.execFile(file, args, ...rest),
+    spawn: (file, args, options) => {
+      const child = new EventEmitter();
+      child.unref = () => { child.unrefed = true; };
+      spawned.push({ file, args, options, child });
+      process.nextTick(() => state.chromeError ? child.emit('error', state.chromeError) : child.emit('spawn'));
+      return child;
+    } };
   const vscode = {
     Uri: { file: (fsPath) => ({ fsPath, scheme: 'file' }) },
     ViewColumn: { Active: -1 },
-    commands: { executeCommand: async (command, target, column) => { opened.push([command, target.fsPath, column]); } },
     window: {
       tabGroups: { all: [{ viewColumn: 1 }, { viewColumn: 2 }] },
       createWebviewPanel: (viewType, title, column, options) => {
-        const panel = { viewType, title, column, options, revealed: 0, disposed: null, receive: null,
-          webview: { html: '', cspSource: 'https://webview', asWebviewUri: (u) => uri(u.fsPath),
-            onDidReceiveMessage: (handler) => { panel.receive = handler; } },
-          onDidDispose: (handler) => { panel.disposed = handler; },
-          reveal() { this.revealed++; } };
-        panels.push(panel);
-        return panel;
+        panels.push({ viewType, title, column, options });
+        return null;
       },
       createOutputChannel: () => ({ appendLine() {} }),
       showErrorMessage: async (message) => { errors.push(message); },
     },
     workspace: { workspaceFolders: [], getConfiguration: () => ({ get: () => '' }) },
   };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, shotsSummary });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, shotsSummary, windowsFileUrl });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout, process,
-    require: (name) => name === 'vscode' ? vscode : require(name),
+    require: (name) => ({ vscode, child_process: childProcess, os: { ...os, tmpdir: () => root } })[name] || require(name),
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
-  return { ...api, provider, repo, dir, panels, opened, errors,
+  return { ...api, provider, repo, dir, panels, spawned, errors, state,
+    page: path.join(root, 'minion-hq-shots', 'PR_7.html'),
     click: () => provider.onMessage({ type: 'shots', repoPath: repo }) };
 }
 
@@ -91,51 +100,54 @@ test('only PR rows with screenshots carry the control, and clicking it asks the 
   assert.equal(saved, 0, 'the screenshot control must not collapse or expand its row');
 });
 
-test('the set opens in one editor tab that loads only its own images and re-reads a replaced set', async (t) => {
+test('Windows paths become file URLs with each name encoded', (t) => {
+  const f = fixture(t);
+  assert.equal(f.windowsFileUrl('\\\\wsl.localhost\\Ubuntu\\home\\a b#1'), 'file://wsl.localhost/Ubuntu/home/a%20b%231');
+  assert.equal(f.windowsFileUrl('C:\\Users\\simon'), 'file:///C:/Users/simon');
+});
+
+test('the set opens in Chrome as a page that loads only its own images and re-reads a replaced set', async (t) => {
   const f = fixture(t);
   await f.click();
-  assert.equal(f.panels.length, 1);
-  const [panel] = f.panels;
-  assert.equal(panel.title, 'pr-7 · Screenshots');
-  assert.equal(panel.column, 2, 'the tab opens in the last editor group');
-  assert.deepEqual(Array.from(panel.options.localResourceRoots, (u) => u.fsPath), [f.dir]);
-  const html = panel.webview.html;
-  assert.match(html, /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https:\/\/webview; style-src 'unsafe-inline'; script-src 'nonce-[a-z0-9]+';">/);
-  assert.ok(html.includes('<img src="https://webview/' + path.join(f.dir, 'before/01-a-desktop.webp') + '" alt="Vorher">'));
-  assert.ok(html.includes('href="https://webview/' + path.join(f.dir, 'after/01-a-desktop.webp') + '" data-file="after/01-a-desktop.webp"'));
+  assert.deepEqual(f.panels, [], 'no editor tab opens');
+  assert.equal(f.spawned.length, 1);
+  const [chrome] = f.spawned;
+  assert.equal(chrome.file, '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe');
+  assert.deepEqual(Array.from(chrome.args), ['\\\\wsl.localhost\\Ubuntu' + f.page.replace(/\//g, '\\')]);
+  assert.deepEqual({ ...chrome.options }, { detached: true, stdio: 'ignore' });
+  assert.ok(chrome.child.unrefed, 'Chrome outlives the extension host');
+  const url = (rel) => 'file://wsl.localhost/Ubuntu' + f.dir + '/' + rel;
+  const html = fs.readFileSync(f.page, 'utf8');
+  assert.match(html, /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file:; style-src 'unsafe-inline';">/);
+  assert.ok(html.includes('<a href="' + url('before/01-a-desktop.webp') + '"><img src="' + url('before/01-a-desktop.webp') + '" alt="Vorher"></a>'));
   assert.ok(html.includes('<a href="#">x</a><script>alert(1)</script>'), 'outside links go nowhere; the policy blocks CI scripts');
+  assert.doesNotMatch(html, /acquireVsCodeApi|data-file/);
   const other = html.slice(html.indexOf('Other screenshots'));
   assert.ok(other.indexOf('clicked/2-menu.png') < other.indexOf('clicked/10-menu.png'), 'unshown images follow in natural order');
+  assert.ok(other.includes('<a href="' + url('clicked/2-menu.png') + '">'), 'a click opens the image full size');
   assert.doesNotMatch(other, /01-a-desktop/);
-  assert.equal(panel.revealed, 1);
-
-  await panel.receive({ type: 'open', file: 'clicked/2-menu.png' });
-  await panel.receive({ type: 'open', file: '../../kylie-worktrees/pr-7/secret.png' });
-  await panel.receive({ type: 'open', file: 'shots.json' });
-  assert.deepEqual(f.opened, [['vscode.open', path.join(f.dir, 'clicked/2-menu.png'), 2]]);
 
   fs.rmSync(path.join(f.dir, 'clicked'), { recursive: true });
   await f.click();
-  assert.equal(f.panels.length, 1, 'a second click reuses the tab');
-  assert.equal(panel.revealed, 2);
-  assert.doesNotMatch(panel.webview.html, /Other screenshots/);
-
-  panel.disposed();
-  await f.click();
-  assert.equal(f.panels.length, 2, 'a closed tab opens again');
+  assert.equal(f.spawned.length, 2, 'a second click opens the set again');
+  assert.doesNotMatch(fs.readFileSync(f.page, 'utf8'), /Other screenshots/);
   assert.deepEqual(f.errors, []);
 });
 
-test('a set without index.html still shows its images, and a missing set reports an error', async (t) => {
+test('a set without index.html still shows its images; a missing set or Chrome reports an error', async (t) => {
   const f = fixture(t);
   fs.rmSync(path.join(f.dir, 'index.html'));
   await f.click();
-  const html = f.panels[0].webview.html;
+  const html = fs.readFileSync(f.page, 'utf8');
   assert.match(html, /<h1>pr-7 · Screenshots<\/h1>/);
   assert.equal((html.match(/<figure>/g) || []).length, 4);
 
+  f.state.chromeError = new Error('spawn chrome.exe ENOENT');
+  await f.click();
   fs.rmSync(f.dir, { recursive: true });
   await f.click();
-  assert.equal(f.errors.length, 1);
-  assert.match(f.errors[0], /^Could not open the screenshots of pr-7: no screenshots in /);
+  assert.deepEqual(f.errors.map((e) => e.replace(/ in .*$/, '')), [
+    'Could not open the screenshots of pr-7: spawn chrome.exe ENOENT',
+    'Could not open the screenshots of pr-7: no screenshots',
+  ]);
 });

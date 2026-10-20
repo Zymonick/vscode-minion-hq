@@ -1,6 +1,5 @@
 const assert = require('node:assert/strict');
 const cp = require('node:child_process');
-const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -27,19 +26,21 @@ function fixture(t) {
     + '<figure><a href="after/01-a-desktop.webp"><img src="after/01-a-desktop.webp" alt="Nachher"></a></figure>\n'
     + '<a href="../../kylie-worktrees/pr-7/secret.png">x</a><script>alert(1)</script>\n</body>\n</html>\n');
 
-  // wslpath maps the WSL root to the distro's share; Chrome starts unless chromeError is set.
-  const panels = [], spawned = [], errors = [];
+  // wslpath maps the WSL root to the distro's share; PowerShell starts Chrome
+  // unless chromeError holds its error output.
+  const panels = [], launched = [], errors = [];
   const state = { chromeError: null };
   const childProcess = { ...cp,
-    execFile: (file, args, ...rest) => file === 'wslpath'
-      ? rest[rest.length - 1](null, '\\\\wsl.localhost\\Ubuntu' + args[1].replace(/\//g, '\\') + '\n')
-      : cp.execFile(file, args, ...rest),
-    spawn: (file, args, options) => {
-      const child = new EventEmitter();
-      child.unref = () => { child.unrefed = true; };
-      spawned.push({ file, args, options, child });
-      process.nextTick(() => state.chromeError ? child.emit('error', state.chromeError) : child.emit('spawn'));
-      return child;
+    execFile: (file, args, ...rest) => {
+      const done = rest[rest.length - 1];
+      if (file === 'wslpath') return done(null, '\\\\wsl.localhost\\Ubuntu' + args[1].replace(/\//g, '\\') + '\n');
+      if (!file.endsWith('powershell.exe')) return cp.execFile(file, args, ...rest);
+      const launch = { file, args, options: rest[0], input: null };
+      launched.push(launch);
+      return { stdin: { end: (input) => {
+        launch.input = JSON.parse(input);
+        process.nextTick(() => state.chromeError ? done(new Error('exit 1'), '', state.chromeError + '\r\n') : done(null, '', ''));
+      } } };
     } };
   const vscode = {
     Uri: { file: (fsPath) => ({ fsPath, scheme: 'file' }) },
@@ -61,7 +62,7 @@ function fixture(t) {
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
-  return { ...api, provider, repo, dir, panels, spawned, errors, state,
+  return { ...api, provider, repo, dir, panels, launched, errors, state,
     page: path.join(root, 'minion-hq-shots', 'PR_7.html'),
     click: () => provider.onMessage({ type: 'shots', repoPath: repo }) };
 }
@@ -110,12 +111,14 @@ test('the set opens in Chrome as a page that loads only its own images and re-re
   const f = fixture(t);
   await f.click();
   assert.deepEqual(f.panels, [], 'no editor tab opens');
-  assert.equal(f.spawned.length, 1);
-  const [chrome] = f.spawned;
-  assert.equal(chrome.file, '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe');
-  assert.deepEqual(Array.from(chrome.args), ['\\\\wsl.localhost\\Ubuntu' + f.page.replace(/\//g, '\\')]);
-  assert.deepEqual({ ...chrome.options }, { detached: true, stdio: 'ignore' });
-  assert.ok(chrome.child.unrefed, 'Chrome outlives the extension host');
+  assert.equal(f.launched.length, 1);
+  const [launch] = f.launched;
+  assert.equal(launch.file, '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe');
+  assert.deepEqual(Array.from(launch.args.slice(0, 3)), ['-NoProfile', '-NonInteractive', '-Command']);
+  assert.match(launch.args[3], /Start-Process -FilePath \$r\.chrome -ArgumentList \$r\.arguments .* -WindowStyle Normal$/);
+  assert.deepEqual(launch.input, { chrome: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    arguments: ['--profile-directory=KyliePreview', '--new-window', '\\\\wsl.localhost\\Ubuntu' + f.page.replace(/\//g, '\\')] },
+    'a new normal window of the preview profile shows the page; the path travels as data');
   const url = (rel) => 'file://wsl.localhost/Ubuntu' + f.dir + '/' + rel;
   const html = fs.readFileSync(f.page, 'utf8');
   assert.match(html, /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file:; style-src 'unsafe-inline';">/);
@@ -129,7 +132,7 @@ test('the set opens in Chrome as a page that loads only its own images and re-re
 
   fs.rmSync(path.join(f.dir, 'clicked'), { recursive: true });
   await f.click();
-  assert.equal(f.spawned.length, 2, 'a second click opens the set again');
+  assert.equal(f.launched.length, 2, 'a second click opens the set again');
   assert.doesNotMatch(fs.readFileSync(f.page, 'utf8'), /Other screenshots/);
   assert.deepEqual(f.errors, []);
 });
@@ -142,12 +145,12 @@ test('a set without index.html still shows its images; a missing set or Chrome r
   assert.match(html, /<h1>pr-7 · Screenshots<\/h1>/);
   assert.equal((html.match(/<figure>/g) || []).length, 4);
 
-  f.state.chromeError = new Error('spawn chrome.exe ENOENT');
+  f.state.chromeError = 'This command cannot be run due to the error: The system cannot find the file specified.';
   await f.click();
   fs.rmSync(f.dir, { recursive: true });
   await f.click();
   assert.deepEqual(f.errors.map((e) => e.replace(/ in .*$/, '')), [
-    'Could not open the screenshots of pr-7: spawn chrome.exe ENOENT',
+    'Could not open the screenshots of pr-7: This command cannot be run due to the error: The system cannot find the file specified.',
     'Could not open the screenshots of pr-7: no screenshots',
   ]);
 });

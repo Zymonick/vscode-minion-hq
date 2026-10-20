@@ -251,8 +251,9 @@ folder, or one of its direct subfolders, holds a PNG, WebP, JPEG or GIF image.
 Its tooltip gives the image count and the `taken` time of `shots.json`, when
 present. Detect the set within the existing repository scan; add no polling.
 
-Clicking the control opens the set in a new tab of Windows Chrome and never
-toggles the row. Each click re-reads the set into a page in the extension
+Clicking the control opens the set in a new window of the `KyliePreview`
+Windows Chrome profile and never toggles the row. PowerShell `Start-Process`
+requests a normal window, as `ci preview N open` does. Each click re-reads the set into a page in the extension
 host's temporary folder; the set folder stays unchanged. The page shows CI's
 `index.html` with its relative image links pointing into the set folder, then
 every image of the set the page does not show, in natural path order. Without

@@ -517,22 +517,30 @@ function editorColumn() {
   return Math.max(vscode.ViewColumn.Active, ...vscode.window.tabGroups.all.map((group) => group.viewColumn));
 }
 
-// Windows Chrome shows a set; WSL interop starts it and leaves it running.
-const CHROME = '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe';
+// Windows Chrome shows a set in a new window of the profile `ci preview N open`
+// uses. Chrome started directly from WSL can add the tab to a background window,
+// so PowerShell's Start-Process asks Windows for a normal window instead.
+const POWERSHELL = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME_LAUNCH = "$ErrorActionPreference = 'Stop'; $r = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
+  + 'Start-Process -FilePath $r.chrome -ArgumentList $r.arguments -WorkingDirectory (Split-Path -Parent $r.chrome) -WindowStyle Normal';
 
-// Each click re-reads the set into a scratch page and opens it in a Chrome tab.
+function startChrome(args) {
+  return new Promise((resolve, reject) => {
+    const child = cp.execFile(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', CHROME_LAUNCH],
+      { timeout: 15000 }, (err, stdout, stderr) => err ? reject(new Error(String(stderr).trim() || err.message)) : resolve());
+    child.stdin.end(JSON.stringify({ chrome: CHROME, arguments: args }));
+  });
+}
+
+// Each click re-reads the set into a scratch page and opens it in Chrome.
 async function openShots(repo) {
   const dir = shotsDir(repo.repoPath, repo.pr.serial);
   if (!shotImages(dir).length) throw new Error('no screenshots in ' + dir);
   const page = path.join(os.tmpdir(), 'minion-hq-shots', 'PR_' + repo.pr.serial + '.html');
   fs.mkdirSync(path.dirname(page), { recursive: true });
   fs.writeFileSync(page, shotsPage(dir, windowsFileUrl(await windowsPath(dir)), `pr-${repo.pr.serial} · Screenshots`));
-  const target = await windowsPath(page);
-  await new Promise((resolve, reject) => {
-    const child = cp.spawn(CHROME, [target], { detached: true, stdio: 'ignore' });
-    child.once('error', reject);
-    child.once('spawn', () => { child.unref(); resolve(); });
-  });
+  await startChrome(['--profile-directory=KyliePreview', '--new-window', await windowsPath(page)]);
 }
 
 // Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so

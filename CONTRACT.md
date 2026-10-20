@@ -161,6 +161,13 @@ own changes conflict with this PR's. It appears as a warning-coloured
 An empty or missing list adds no marker, a landed row shows none, and a list
 with anything other than positive integers makes the report malformed.
 
+A click on the `blocked: awaiting schema` marker opens one diff for each
+changed models file of the PR. The diff runs from the last commit that changed
+the `migrations/` folder of that app to the working tree. Without such a commit,
+it runs from the merge base. An uncommitted new models file always opens. When
+no file differs, a message tells that no model change follows the last
+migration. Git runs only on the click; the marker tooltip names the click.
+
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.

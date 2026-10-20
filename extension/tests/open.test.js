@@ -29,7 +29,7 @@ function fixture(t) {
 }
 
 function harness(childProcess = cp) {
-  const commands = [], errors = [], contents = new Map(), fileSystems = new Map();
+  const commands = [], errors = [], infos = [], contents = new Map(), fileSystems = new Map();
   // The main window's group and one floating window group.
   const groups = [{ viewColumn: 1 }, { viewColumn: 2 }];
   let provider;
@@ -50,6 +50,7 @@ function harness(childProcess = cp) {
       tabGroups: { all: groups },
       createOutputChannel: () => ({ appendLine() {} }),
       showErrorMessage: async (message) => { errors.push(message); },
+      showInformationMessage: async (message) => { infos.push(message); },
       registerWebviewViewProvider: (name, value) => { provider = value; return disposable(); },
       registerFileDecorationProvider: disposable,
     },
@@ -76,7 +77,7 @@ function harness(childProcess = cp) {
     assert.ok(contents.has(uri.scheme), `unregistered scheme: ${uri.scheme}`);
     return Buffer.from(await contents.get(uri.scheme).provideTextDocumentContent(uri));
   }
-  return { provider, commands, errors, read, fileSystems, groups };
+  return { provider, commands, errors, infos, read, fileSystems, groups };
 }
 
 test('files and diffs open in the last editor group, so a floating window keeps the main layout', async (t) => {
@@ -222,4 +223,66 @@ test('rendered staged and working rows send their own comparison mode', () => {
     events.click({ target: { closest: (selector) => selector === '.row' ? { dataset: { act } } : null } });
   }
   assert.deepEqual(messages.slice(-2).map((m) => m.mode), ['staged', 'working']);
+});
+
+test('the schema marker opens each models file from the last migration of its app', async (t) => {
+  const { repo, git, base } = fixture(t);
+  const write = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+    fs.writeFileSync(path.join(repo, file), text);
+  };
+  write('shop/models.py', 'migrated\n');
+  write('shop/migrations/0001_initial.py', '');
+  write('shop/views.py', 'view\n');
+  git('add', '.');
+  git('commit', '-qm', 'Migrate shop');
+  const migration = git('rev-parse', 'HEAD');
+  write('shop/models.py', 'pending\n');
+  write('shop/views.py', 'changed\n');
+  write('stock/models/items.py', 'new\n');
+  const h = harness();
+  const files = [{ path: 'shop/models.py', letter: 'M' }, { path: 'shop/views.py', letter: 'M' },
+    { path: 'stock/models/items.py', letter: 'A', uncommitted: true }];
+  h.provider.data.set(repo, { name: 'pr-7', vsMaster: { mergeBase: base, files } });
+  await h.provider.onMessage({ type: 'schema', repoPath: repo });
+  assert.deepEqual(h.commands.map((c) => [c[0], c[3]]), [
+    ['vscode.diff', `models.py (migration ${migration.slice(0, 7)} ↔ working tree)`],
+    ['vscode.diff', `items.py (migration ${base.slice(0, 7)} ↔ working tree)`],
+  ]);
+  assert.equal((await h.read(h.commands[0][1])).toString(), 'migrated\n');
+  assert.equal((await h.read(h.commands[0][2])).toString(), 'pending\n');
+  assert.equal((await h.read(h.commands[1][1])).length, 0, 'an app without migrations compares with the merge base');
+  assert.equal(h.commands[0][4].viewColumn, 2);
+  write('shop/models.py', 'migrated\n');
+  h.provider.data.set(repo, { name: 'pr-7', vsMaster: { mergeBase: base, files: files.slice(0, 2) } });
+  await h.provider.onMessage({ type: 'schema', repoPath: repo });
+  assert.equal(h.commands.length, 2);
+  assert.deepEqual(h.infos, ['pr-7: no model change after the last migration']);
+  assert.deepEqual(h.errors, []);
+});
+
+test('only the schema blocker marker is clickable and sends its worktree', () => {
+  const html = vm.runInNewContext(source + '\ngetHtml("N");', {
+    module: { exports: {} }, require: (name) => name === 'vscode' ? {} : require(name),
+  });
+  const root = {}, events = {}, messages = [], windowEvents = {};
+  vm.runInNewContext(html.match(/<script nonce="N">([^]*)<\/script>/)[1], {
+    acquireVsCodeApi: () => ({ getState: () => ({}), setState() {}, postMessage: (m) => messages.push(m) }),
+    document: { getElementById: () => root, addEventListener: (name, fn) => { events[name] = fn; } },
+    window: { addEventListener: (name, fn) => { windowEvents[name] = fn; } },
+  });
+  const show = (statusLabel) => windowEvents.message({ data: { type: 'data', repos: [{
+    repoPath: '/w/pr-7', name: 'pr-7', branch: 'pr-7', totals: { add: 0, del: 0 },
+    staged: [], unstaged: [], untracked: [], commits: [],
+    pr: { serial: 7, status: 'blocked', statusLabel, reason: 'blocked: ' + statusLabel },
+  }] } });
+  show('blocked: awaiting choice');
+  assert.doesNotMatch(root.innerHTML, /prst-schema|data-schema/);
+  show('blocked: awaiting schema');
+  const marker = root.innerHTML.match(/<span class="prst prst-blocked prst-schema" title="([^"]*)" data-schema="([^"]*)">\[blocked: awaiting schema\]/);
+  assert.ok(marker, root.innerHTML);
+  assert.equal(marker[2], '/w/pr-7');
+  assert.match(marker[1], /\nClick: open the model changes after the last migration$/);
+  events.click({ target: { closest: (selector) => selector === '.prst-schema' ? { dataset: { schema: marker[2] } } : null } });
+  assert.deepEqual({ ...messages.at(-1) }, { type: 'schema', repoPath: '/w/pr-7' });
 });

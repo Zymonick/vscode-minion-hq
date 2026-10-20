@@ -692,6 +692,26 @@ async function collectCi(repoPath, branch) {
   }
 }
 
+// The PR's models files that differ from the last commit that touched their
+// app's migrations: the declarations a pending makemigrations reads. When master
+// brought a newer migration of the same app, already migrated lines show too.
+const MODELS_FILE = /^(.+?)\/models(?:\.py|\/[^/]+\.py)$/;
+
+async function unmigratedModels(repoPath, vsMaster) {
+  const changed = [];
+  for (const f of vsMaster.files) {
+    const app = (f.path.match(MODELS_FILE) || [])[1];
+    if (!app || f.letter === 'D') continue;
+    const base = (await git(repoPath, ['log', '-1', '--format=%H', 'HEAD', '--', app + '/migrations'])).trim()
+      || vsMaster.mergeBase;
+    if ((f.letter === 'A' && f.uncommitted)
+        || (await git(repoPath, ['diff', '--name-only', base, '--', f.path])).trim()) {
+      changed.push({ path: f.path, base });
+    }
+  }
+  return changed;
+}
+
 // ── Vendored dependencies vs master ─────────────────────────────────────────
 const VENDOR_CACHE_MAX = 64;
 const VENDOR_METADATA_MAX = 128 * 1024;
@@ -1342,6 +1362,8 @@ function getHtml(nonce) {
   .prst-ready, .prst-ready-to-land { color: var(--vscode-charts-green, #89d185); }
   .prst-open { color: var(--vscode-descriptionForeground); }
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+  .prst-schema { cursor: pointer; }
+  .prst-schema:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -1374,11 +1396,14 @@ const PR_STATUS_TIP = {
 
 // Task state accompanies its existing case number and summary.
 // The status sits outside the dimmed label so its colour reads at full strength.
-function prTag(pr, ci) {
+// CI's schema blocker opens the model changes that makemigrations reads.
+function prTag(pr, ci, repoPath) {
   if (!pr || !pr.status) return '';
+  const schema = pr.statusLabel === 'blocked: awaiting schema' && repoPath;
   const reason = pr.status === 'landed' || pr.status === 'testing'
     ? PR_STATUS_TIP[pr.status]
-    : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel, ci?.reviewLabel].filter(Boolean).join('\\n');
+    : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel, ci?.reviewLabel,
+      schema && 'Click: open the model changes after the last migration'].filter(Boolean).join('\\n');
   const origin = pr.origin ? '<span class="pr-origin">(-&gt;pr-' + esc(pr.origin) + ')</span>' : '';
   const custom = pr.customLabel
     ? '<span class="pr-custom-label" title="Custom label: ' + esc(pr.customLabel) + '">[' + esc(pr.customLabel) + ']</span>'
@@ -1386,8 +1411,9 @@ function prTag(pr, ci) {
   const conflicts = pr.status !== 'landed' && pr.conflicts && pr.conflicts.length
     ? '<span class="pr-conflicts" title="Text conflict with open PRs">conflicts ' + esc(pr.conflicts.join(', ')) + '</span>'
     : '';
-  return origin + custom + conflicts + '<span class="prst prst-' + esc(pr.status) + '" title="'
-    + esc(reason) + '">[' + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
+  return origin + custom + conflicts + '<span class="prst prst-' + esc(pr.status) + (schema ? ' prst-schema' : '')
+    + '" title="' + esc(reason) + '"' + (schema ? ' data-schema="' + esc(repoPath) + '"' : '') + '>['
+    + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }
@@ -1587,7 +1613,7 @@ function render() {
         + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false);
       if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
     }
-    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci), dim: repoDim,
+    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
       btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
@@ -1663,6 +1689,11 @@ document.addEventListener('click', (ev) => {
   const shots = ev.target.closest('.shots');
   if (shots) {
     vscode.postMessage({ type: 'shots', repoPath: shots.dataset.shots });
+    return;
+  }
+  const schema = ev.target.closest('.prst-schema');
+  if (schema) {
+    vscode.postMessage({ type: 'schema', repoPath: schema.dataset.schema });
     return;
   }
   const el = ev.target.closest('.row');
@@ -2244,6 +2275,25 @@ class StatsViewProvider {
       } catch (error) {
         log('shots: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open the screenshots of ${repo.name}: ${error.message}`);
+      }
+    } else if (m.type === 'schema') {
+      const repo = this.data.get(m.repoPath);
+      if (!repo || !repo.vsMaster) return;
+      try {
+        const files = await unmigratedModels(m.repoPath, repo.vsMaster);
+        if (!files.length) {
+          vscode.window.showInformationMessage(`${repo.name}: no model change after the last migration`);
+        }
+        for (const f of files) {
+          const [left, right] = await Promise.all([
+            revisionUri(m.repoPath, f.base, f.path), workingUri(m.repoPath, f.path),
+          ]);
+          await vscode.commands.executeCommand('vscode.diff', left, right,
+            `${path.basename(f.path)} (migration ${f.base.slice(0, 7)} ↔ working tree)`, { viewColumn: editorColumn() });
+        }
+      } catch (error) {
+        log('schema: ' + repo.name + ': ' + error.message);
+        vscode.window.showErrorMessage(`Could not open the model changes of ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'open') {
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));

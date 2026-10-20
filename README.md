@@ -33,7 +33,7 @@ The panel is a webview (custom HTML/CSS) — that is what allows colors and alig
 
 Run `./build.sh` to package and install locally with the profile checks described below. Use `./build.sh --package-only` only when a package without installation is needed.
 
-Keep the VS Code window for the target profile open. After installation, run **Ctrl+Shift+P → Developer: Reload Window**, then open **Minion HQ** from the Activity Bar.
+Keep the VS Code window for the target profile open. After installation, run **Ctrl+Shift+P → Developer: Restart Extension Host**, then open **Minion HQ** from the Activity Bar.
 
 Minion HQ updates the existing SCM Diff Stats installation. The extension ID `simon.scm-diff-stats` and `scmDiffStats.*` settings remain compatible with existing installations.
 
@@ -43,7 +43,7 @@ Keep the Kylie VS Code window open in its `minion-hq-minimal` profile. Run `/hom
 
 Named WSL profiles are updated through their running windows. The headless WSL launcher ignores `--profile`, so its success message can leave the active profile on an older release. Deployment must verify the user's profile registration and installed files against the tested package; checking only the default profile or an existing version directory is insufficient. If a profile cannot be updated, open a VS Code window using that profile and rerun the deployment command.
 
-After the target profile is verified, run **Ctrl+Shift+P → Developer: Reload Window** to activate the update. A failed check or push stops deployment; installation failure leaves the pushed commit available for retry. The command uses Node.js 24 from PATH or nvm; `NODE_BIN` overrides detection.
+After the target profile is verified, run **Ctrl+Shift+P → Developer: Restart Extension Host** to activate the update. Do not use **Developer: Reload Window**: it can restart the WSL server and end every Claude terminal. A failed check or push stops deployment; installation failure leaves the pushed commit available for retry. The command uses Node.js 24 from PATH or nvm; `NODE_BIN` overrides detection.
 
 Install the command once from the desired checkout with `mkdir -p "$HOME/.local/bin"` and `ln -s "$PWD/deploy.sh" "$HOME/.local/bin/minion-hq-deploy"`. Keep that checkout on disk and include `$HOME/.local/bin` in PATH. The script follows the symlink to its checkout. Deployment accepts only worktrees of `/home/azrael/vscode-minion-hq`, the exact `git@github.com:Zymonick/vscode-minion-hq.git` origin, the existing release branch other than `master` or `main`, and the `simon.scm-diff-stats` extension. It pushes the current branch without merging it into another branch. Running `./deploy.sh` directly has the same behavior.
 
@@ -56,7 +56,7 @@ Use Node.js 24, Python 3, and Bash. With nvm installed, run `nvm use` to select 
 ```bash
 ./ci.sh                    # check syntax, run tests, and build the VSIX
 ./build.sh --package-only   # build without installing
-./build.sh                 # build and install locally; then reload VS Code
+./build.sh                 # build and install locally; then restart the extension host
 ```
 
 Bump `version` in `extension/package.json` **and** in `extension.vsixmanifest` when releasing.

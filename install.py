@@ -120,7 +120,7 @@ def install(code, vsix, home):
         for name, registry in profiles:
             verify(registry, extensions, package, version)
             print(f'Verified Minion HQ {version} in profile {name or "Default"}', flush=True)
-    print('Reload the VS Code window to activate Minion HQ.', flush=True)
+    print('Run Ctrl+Shift+P → Developer: Restart Extension Host to activate Minion HQ.', flush=True)
 
 
 if __name__ == '__main__':

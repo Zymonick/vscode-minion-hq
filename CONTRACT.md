@@ -201,8 +201,25 @@ changes do not open duplicate terminals:
 
 `claude` is the terminal's process, not a command typed into a shell. Minion HQ
 sends no prompt and starts no CI run or agent work by itself. Clicking the
-control never toggles the row. Look sessions up on click, never during refresh,
-polling, or agent scans.
+control never toggles the row. Look a PR's session up on click, never during
+refresh, polling, or agent scans.
+
+## Claude session restore
+
+Quitting VS Code ends the WSL server and every terminal. Each window brings
+back the Claude sessions of its terminals at its next start:
+
+- The agent scan records, in the window's workspace state, each interactive
+  `claude` CLI session whose process is a terminal's process or runs at most
+  three generations below it. Each entry keeps the session id, the folder the
+  session started in, and the terminal order. The id comes from Claude's
+  session record with a matching process start time.
+- A recorded session leaves the record after 30 seconds without its process.
+  A closing window ends the extension host first, so its sessions stay recorded.
+- At activation, each recorded session resumes with `claude --resume <id>` in
+  a new terminal in its folder, in recorded order. A running session, or one
+  without its transcript, does not resume. No terminal takes focus.
+- Plain shells and Codex terminals are not restored.
 
 ## Codex per PR
 

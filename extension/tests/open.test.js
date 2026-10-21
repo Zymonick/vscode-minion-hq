@@ -70,7 +70,7 @@ function harness(childProcess = cp) {
     require: (name) => name === 'vscode' ? vscode : name === 'child_process' ? childProcess : require(name),
   };
   vm.runInNewContext(source, context);
-  context.module.exports.activate({ subscriptions: [] });
+  context.module.exports.activate({ subscriptions: [], workspaceState: { get: (key, value) => value, update: async () => {} } });
   async function read(uri) {
     if (uri.scheme === 'file') return fs.readFileSync(uri.fsPath);
     if (fileSystems.has(uri.scheme)) return fileSystems.get(uri.scheme).readFile(uri);

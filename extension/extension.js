@@ -1967,6 +1967,78 @@ async function openClaude(repo) {
   }).show();
 }
 
+// ── Claude session restore ──────────────────────────────────────────────────
+// Quitting VS Code ends the WSL server with every terminal. The agent scan
+// records the Claude sessions of this window's terminals in workspace state,
+// and the next start resumes each one that no longer runs. A session leaves
+// the record only after RESTORE_GRACE_MS without its process: a closing window
+// ends this extension host first, so its sessions stay recorded.
+const RESTORE_KEY = 'claudeTerminalSessions';
+const RESTORE_GRACE_MS = 30000;
+
+// The interactive Claude CLI session whose process is pid, from Claude's session record.
+function claudeRecord(pid) {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(process.env.HOME || '', '.claude', 'sessions', pid + '.json')));
+    if (meta.pid !== pid || meta.entrypoint !== 'cli' || typeof meta.sessionId !== 'string'
+      || typeof meta.cwd !== 'string' || procStat(pid).start !== String(meta.procStart)) return null;
+    return { id: meta.sessionId, cwd: meta.cwd };
+  } catch { return null; }
+}
+
+// A terminal's Claude session: its own process, or claude started below its shell.
+function claudeInTree(pid, depth = 3) {
+  const own = claudeRecord(pid);
+  if (own || !depth) return own;
+  let children;
+  try { children = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').split(' ').filter(Boolean); } catch { return null; }
+  for (const child of children) {
+    const session = claudeInTree(+child, depth - 1);
+    if (session) return session;
+  }
+  return null;
+}
+
+async function claudeTerminalSessions() {
+  const sessions = [];
+  for (const [index, terminal] of vscode.window.terminals.entries()) {
+    if (terminal.exitStatus) continue;
+    const pid = await terminal.processId;
+    const session = pid && claudeInTree(pid);
+    if (session && !sessions.some((s) => s.id === session.id)) sessions.push({ ...session, index });
+  }
+  return sessions;
+}
+
+// The record after a scan: the live sessions, and recorded ones absent for less than the grace period.
+function nextRestoreRecord(recorded, live, absent, now) {
+  const ids = new Set(live.map((s) => s.id));
+  for (const id of ids) absent.delete(id);
+  const kept = recorded.filter((s) => {
+    if (ids.has(s.id)) return false;
+    const since = absent.get(s.id) ?? now;
+    absent.set(s.id, since);
+    if (now - since < RESTORE_GRACE_MS) return true;
+    absent.delete(s.id);
+    return false;
+  });
+  return [...live, ...kept].sort((a, b) => a.index - b.index);
+}
+
+// Each recorded session resumes in a new terminal, in its folder and order,
+// unless it runs already or its transcript is gone. No terminal takes focus.
+function restoreClaudeSessions(recorded) {
+  if (!recorded.length) return;
+  const claude = agentExecutable('claude');
+  if (!claude) return log('claude restore: the claude CLI is not on PATH or in ~/.local/bin');
+  const projects = path.join(process.env.HOME || '', '.claude', 'projects');
+  for (const session of recorded) {
+    if (claudeSessionPid(session.id)
+      || !fs.existsSync(path.join(projects, session.cwd.replace(/[^a-zA-Z0-9]/g, '-'), session.id + '.jsonl'))) continue;
+    vscode.window.createTerminal({ cwd: session.cwd, shellPath: claude, shellArgs: ['--resume', session.id] });
+  }
+}
+
 // Codex shares the PR title registry, but stores rollouts under CODEX_HOME.
 // Desktop sessions can use a different executable and home from the terminal.
 // Resolve only on click; read candidate metadata, never whole conversations.
@@ -2493,12 +2565,30 @@ function activate(context) {
     else if (e.affectsConfiguration('scmDiffStats')) provider.refresh();
   }));
 
+  restoreClaudeSessions(context.workspaceState.get(RESTORE_KEY, []));
+  const absent = new Map();
+  let recording = false;
+  const recordClaudeSessions = async () => {
+    if (recording) return;
+    recording = true;
+    try {
+      const recorded = context.workspaceState.get(RESTORE_KEY, []);
+      const next = nextRestoreRecord(recorded, await claudeTerminalSessions(), absent, Date.now());
+      if (JSON.stringify(next) !== JSON.stringify(recorded)) await context.workspaceState.update(RESTORE_KEY, next);
+    } catch (error) {
+      log('claude restore: ' + error.message);
+    } finally {
+      recording = false;
+    }
+  };
+
   const agentPoll = setInterval(() => {
     const a = scanAgents(provider.repos);
     if (JSON.stringify(a) !== JSON.stringify(provider.agents)) {
       provider.agents = a;
       provider.push();
     }
+    recordClaudeSessions();
   }, 7000);
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
 }

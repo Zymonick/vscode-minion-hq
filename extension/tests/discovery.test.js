@@ -60,7 +60,7 @@ function start(groups, initial, { deferred = false, excluded = [] } = {}) {
       return require(name);
     },
   });
-  activate({ subscriptions: [] });
+  activate({ subscriptions: [], workspaceState: { get: (key, value) => value, update: async () => {} } });
   return {
     calls, pending, provider: () => provider,
     open(file) { const value = repo(file); api.repositories.push(value); opened(value); },

@@ -61,7 +61,7 @@ function fixture(t) {
     workspace: { workspaceFolders: [{ uri: { fsPath: workspace } }], getConfiguration: () => ({ get: () => '' }) },
   };
   const env = { ...process.env, HOME: home, PATH: bin };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, nextRestoreRecord, restoreClaudeSessions });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout,
     process: Object.assign(Object.create(process), { env }),
     require: (name) => name === 'vscode' ? vscode : require(name),
@@ -194,4 +194,59 @@ test('unknown and non-PR rows open nothing, and a missing claude CLI is reported
   await f.click();
   assert.deepEqual(f.created, []);
   assert.deepEqual(f.errors, ['Could not open Claude for pr-7: the claude CLI is not on PATH or in ~/.local/bin']);
+});
+
+test("the Claude sessions of this window's terminals are recorded in terminal order", async (t) => {
+  const f = fixture(t);
+  const id = '11111111-1111-4111-8111-111111111111';
+  f.live(id, process.pid);
+  // This test process stands in for claude: first as the terminal's process, then below the terminal's shell.
+  f.terminals.push(f.terminal('starting', 0), f.terminal('claude', process.pid), f.terminal('exited', process.pid, { code: 0 }));
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTerminalSessions())), [{ id, cwd: f.workspace, index: 1 }]);
+  f.terminals.splice(1, 2, f.terminal('bash', process.ppid));
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTerminalSessions())), [{ id, cwd: f.workspace, index: 1 }]);
+
+  // A record whose pid now belongs to another process, or of a non-interactive run, is no session.
+  f.live(id, process.pid, '1');
+  assert.deepEqual(Array.from(await f.claudeTerminalSessions()), []);
+  const sessions = path.join(f.env.HOME, '.claude', 'sessions', process.pid + '.json');
+  fs.writeFileSync(sessions, JSON.stringify({ pid: process.pid, sessionId: id, cwd: f.workspace,
+    procStart: procStart(process.pid), entrypoint: 'sdk-cli' }));
+  assert.deepEqual(Array.from(await f.claudeTerminalSessions()), []);
+});
+
+test('a recorded session leaves the record after 30 seconds without its process', (t) => {
+  const f = fixture(t);
+  const ids = (record) => Array.from(record, (s) => s.id);
+  const a = { id: 'a', cwd: '/w', index: 0 }, b = { id: 'b', cwd: '/w', index: 1 };
+  const absent = new Map();
+  let record = f.nextRestoreRecord([], [a, b], absent, 0);
+  record = f.nextRestoreRecord(record, [b], absent, 1000);
+  assert.deepEqual(ids(record), ['a', 'b'], 'a closing window keeps its sessions');
+  assert.deepEqual(ids(f.nextRestoreRecord(record, [b], absent, 30999)), ['a', 'b']);
+  record = f.nextRestoreRecord(record, [a, b], absent, 20000);
+  record = f.nextRestoreRecord(record, [b], absent, 40000);
+  assert.deepEqual(ids(f.nextRestoreRecord(record, [b], absent, 69999)), ['a', 'b'], 'a returning session restarts its grace period');
+  assert.deepEqual(ids(f.nextRestoreRecord(record, [b], absent, 70000)), ['b']);
+});
+
+test('recorded sessions resume in new terminals in their folder and order, never twice', (t) => {
+  const f = fixture(t);
+  const [a, b, running] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333'];
+  f.session(a, null);
+  f.session(b, null, f.repo);
+  f.session(running, null);
+  f.live(running, process.pid);
+  f.restoreClaudeSessions([
+    { id: a, cwd: f.workspace, index: 0 },
+    { id: '44444444-4444-4444-8444-444444444444', cwd: f.workspace, index: 1 }, // its transcript is gone
+    { id: running, cwd: f.workspace, index: 2 },
+    { id: b, cwd: f.repo, index: 3 },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [
+    { cwd: f.workspace, shellPath: f.claude, shellArgs: ['--resume', a] },
+    { cwd: f.repo, shellPath: f.claude, shellArgs: ['--resume', b] },
+  ]);
+  assert.deepEqual(f.shown, [], 'restored terminals take no focus');
 });

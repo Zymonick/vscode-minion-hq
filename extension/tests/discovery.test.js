@@ -22,6 +22,7 @@ function start(groups, initial, { deferred = false, excluded = [] } = {}) {
     commands: { registerCommand: disposable, executeCommand: async () => {} },
     window: {
       createOutputChannel: () => ({ appendLine() {} }),
+      onDidOpenTerminal: disposable,
       registerWebviewViewProvider: (id, value) => { provider = value; return disposable(); },
       registerFileDecorationProvider: disposable,
     },

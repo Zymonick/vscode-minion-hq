@@ -42,7 +42,7 @@ function fixture(t) {
   const live = (sessionId, pid, start = procStart(pid)) => fs.writeFileSync(path.join(sessions, pid + '.json'),
     JSON.stringify({ pid, sessionId, cwd: workspace, procStart: start, entrypoint: 'cli' }));
 
-  const created = [], shown = [], infos = [], errors = [];
+  const created = [], shown = [], infos = [], errors = [], logged = [];
   const terminal = (name, pid, exitStatus) => ({ name, exitStatus, creationOptions: { name },
     processId: Promise.resolve(pid), show() { shown.push(this.name + (pid ? ' @' + pid : '')); } });
   const vscode = {
@@ -54,22 +54,22 @@ function fixture(t) {
         value.creationOptions = options;
         return value;
       },
-      createOutputChannel: () => ({ appendLine() {} }),
+      createOutputChannel: () => ({ appendLine: (line) => logged.push(line) }),
       showInformationMessage: async (message) => { infos.push(message); },
       showErrorMessage: async (message) => { errors.push(message); },
     },
     workspace: { workspaceFolders: [{ uri: { fsPath: workspace } }], getConfiguration: () => ({ get: () => '' }) },
   };
   const env = { ...process.env, HOME: home, PATH: bin };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, nextRestoreRecord, restoreClaudeSessions });', {
-    module: { exports: {} }, Buffer, setTimeout, clearTimeout,
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, nextRestoreRecord, restoreClaudeSessions, claudeSessionWatch });', {
+    module: { exports: {} }, Buffer, setTimeout, clearTimeout, setInterval, clearInterval,
     process: Object.assign(Object.create(process), { env }),
     require: (name) => name === 'vscode' ? vscode : require(name),
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
   return { ...api, provider, repo, workspace, claude, env, session, live, terminal,
-    terminals: vscode.window.terminals, created, shown, infos, errors,
+    terminals: vscode.window.terminals, created, shown, infos, errors, logged,
     click: () => provider.onMessage({ type: 'claude', repoPath: repo }) };
 }
 
@@ -249,4 +249,34 @@ test('recorded sessions resume in new terminals in their folder and order, never
     { cwd: f.repo, shellPath: f.claude, shellArgs: ['--resume', b] },
   ]);
   assert.deepEqual(f.shown, [], 'restored terminals take no focus');
+  assert.deepEqual(f.logged, [
+    `claude restore: resumed ${a} in ${f.workspace}`,
+    'claude restore: 44444444-4444-4444-8444-444444444444 not resumed, its transcript is gone',
+    `claude restore: ${running} not resumed, it runs already`,
+    `claude restore: resumed ${b} in ${f.repo}`,
+  ]);
+  f.logged.length = 0;
+  f.restoreClaudeSessions([]);
+  assert.deepEqual(f.logged, ['claude restore: nothing recorded']);
+});
+
+test('a terminal that opens or starts a command is scanned each second for 15 seconds', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture(t);
+  let scans = 0;
+  const watch = f.claudeSessionWatch(() => scans++);
+  watch.start();
+  t.mock.timers.tick(3000);
+  assert.equal(scans, 3);
+  watch.start();
+  t.mock.timers.tick(15000);
+  assert.equal(scans, 18, 'a second start extends the watch on the same timer');
+  t.mock.timers.tick(10000);
+  assert.equal(scans, 18, 'the watch ends');
+  watch.start();
+  t.mock.timers.tick(1000);
+  assert.equal(scans, 19);
+  watch.dispose();
+  t.mock.timers.tick(5000);
+  assert.equal(scans, 19);
 });

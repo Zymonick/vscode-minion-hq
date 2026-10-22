@@ -1975,6 +1975,7 @@ async function openClaude(repo) {
 // ends this extension host first, so its sessions stay recorded.
 const RESTORE_KEY = 'claudeTerminalSessions';
 const RESTORE_GRACE_MS = 30000;
+const RESTORE_WATCH_S = 15;
 
 // The interactive Claude CLI session whose process is pid, from Claude's session record.
 function claudeRecord(pid) {
@@ -2028,15 +2029,37 @@ function nextRestoreRecord(recorded, live, absent, now) {
 // Each recorded session resumes in a new terminal, in its folder and order,
 // unless it runs already or its transcript is gone. No terminal takes focus.
 function restoreClaudeSessions(recorded) {
-  if (!recorded.length) return;
+  if (!recorded.length) return log('claude restore: nothing recorded');
   const claude = agentExecutable('claude');
   if (!claude) return log('claude restore: the claude CLI is not on PATH or in ~/.local/bin');
   const projects = path.join(process.env.HOME || '', '.claude', 'projects');
   for (const session of recorded) {
-    if (claudeSessionPid(session.id)
-      || !fs.existsSync(path.join(projects, session.cwd.replace(/[^a-zA-Z0-9]/g, '-'), session.id + '.jsonl'))) continue;
+    const transcript = path.join(projects, session.cwd.replace(/[^a-zA-Z0-9]/g, '-'), session.id + '.jsonl');
+    const kept = claudeSessionPid(session.id) ? 'it runs already' : !fs.existsSync(transcript) && 'its transcript is gone';
+    if (kept) {
+      log(`claude restore: ${session.id} not resumed, ${kept}`);
+      continue;
+    }
     vscode.window.createTerminal({ cwd: session.cwd, shellPath: claude, shellArgs: ['--resume', session.id] });
+    log(`claude restore: resumed ${session.id} in ${session.cwd}`);
   }
+}
+
+// Claude writes its session record a few seconds after it starts, and the next
+// poll may come after the window closes. While a terminal may be starting
+// claude, the record scan runs each second: start() begins or extends a watch
+// of RESTORE_WATCH_S seconds on one timer.
+function claudeSessionWatch(record) {
+  let ticks = 0, timer = null;
+  const stop = () => { clearInterval(timer); timer = null; };
+  return {
+    start() {
+      ticks = 0;
+      if (timer) return;
+      timer = setInterval(() => (++ticks > RESTORE_WATCH_S ? stop() : record()), 1000);
+    },
+    dispose: stop,
+  };
 }
 
 // Codex shares the PR title registry, but stores rollouts under CODEX_HOME.
@@ -2574,7 +2597,10 @@ function activate(context) {
     try {
       const recorded = context.workspaceState.get(RESTORE_KEY, []);
       const next = nextRestoreRecord(recorded, await claudeTerminalSessions(), absent, Date.now());
-      if (JSON.stringify(next) !== JSON.stringify(recorded)) await context.workspaceState.update(RESTORE_KEY, next);
+      if (JSON.stringify(next) !== JSON.stringify(recorded)) {
+        await context.workspaceState.update(RESTORE_KEY, next);
+        log('claude restore: recorded ' + (next.map((s) => s.id).join(', ') || 'no session'));
+      }
     } catch (error) {
       log('claude restore: ' + error.message);
     } finally {
@@ -2591,6 +2617,12 @@ function activate(context) {
     recordClaudeSessions();
   }, 7000);
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
+  // A terminal that opens, or a command that starts in one, may be claude.
+  const watch = claudeSessionWatch(recordClaudeSessions);
+  context.subscriptions.push(watch, vscode.window.onDidOpenTerminal(watch.start));
+  if (vscode.window.onDidStartTerminalShellExecution) {
+    context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(watch.start));
+  }
 }
 
 function deactivate() {}

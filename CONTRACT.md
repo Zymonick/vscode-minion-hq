@@ -214,12 +214,17 @@ back the Claude sessions of its terminals at its next start:
   three generations below it. Each entry keeps the session id, the folder the
   session started in, and the terminal order. The id comes from Claude's
   session record with a matching process start time.
+- For 15 seconds after a terminal opens or a command starts in a terminal, the
+  scan runs each second on one timer, so a session started shortly before the
+  window closes is recorded.
 - A recorded session leaves the record after 30 seconds without its process.
   A closing window ends the extension host first, so its sessions stay recorded.
 - At activation, each recorded session resumes with `claude --resume <id>` in
   a new terminal in its folder, in recorded order. A running session, or one
   without its transcript, does not resume. No terminal takes focus.
 - Plain shells and Codex terminals are not restored.
+- The `Minion HQ` output channel logs each change of the record and, at
+  activation, each session resumed or not resumed with the reason.
 
 ## Codex per PR
 

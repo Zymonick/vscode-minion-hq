@@ -186,8 +186,9 @@ changes do not open duplicate terminals:
 
 - A running terminal of the PR is focused, including an existing `Claude pr-N`
   terminal.
-- Otherwise the PR's newest Claude session resumes with `claude --resume <id>`
-  in the folder it started in. A session belongs to the PR when its id in
+- Otherwise the PR's newest Claude session resumes with
+  `claude --resume <id> continue` in the folder it started in, so it continues
+  its work at once. A session belongs to the PR when its id in
   `.ci/session-titles` has a title `scripts/rename-session` began with that
   `pr-N`, and its transcript lies in the Claude project directory of the PR
   worktree or of a workspace folder. Codex threads in the same registry and
@@ -200,7 +201,8 @@ changes do not open duplicate terminals:
   attaches it to the PR.
 
 `claude` is the terminal's process, not a command typed into a shell. Minion HQ
-sends no prompt and starts no CI run or agent work by itself. Clicking the
+sends no prompt other than the `continue` of a click-resumed session, and
+starts no CI run or agent work by itself. Clicking the
 control never toggles the row. Look a PR's session up on click, never during
 refresh, polling, or agent scans.
 

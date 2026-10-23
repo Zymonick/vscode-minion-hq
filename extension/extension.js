@@ -1597,7 +1597,7 @@ function render() {
     }
     // Each PR opens its Claude or Codex prompt in a VS Code terminal.
     const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
-      + esc('Claude: open the terminal for ' + r.name + ', resuming its session or starting one') + '">✻</span>' : '';
+      + esc('Claude: open the terminal for ' + r.name + ', continuing its session or starting one') + '">✻</span>' : '';
     const codexHtml = r.pr ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
       + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
       + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Codex">'
@@ -1937,8 +1937,9 @@ function agentExecutable(command, preferred) {
   return null;
 }
 
-// Focus the PR's Claude terminal; else resume its newest session, or start
-// one in its worktree, where the first prompt attaches it to the PR. Claude is
+// Focus the PR's Claude terminal; else resume its newest session with the
+// prompt `continue`, or start one in its worktree, where the first prompt
+// attaches it to the PR. Claude is
 // the terminal's process, so no shell activation races its start, and a
 // session already running elsewhere is never resumed a second time.
 async function openClaude(repo) {
@@ -1963,7 +1964,7 @@ async function openClaude(repo) {
   // marks a working session and ✳ one that is idle or waiting for input.
   vscode.window.createTerminal({
     cwd: session ? session.cwd : repo.repoPath, env: { MINION_HQ_CLAUDE_PR: repo.repoPath },
-    shellPath: claude, shellArgs: session ? ['--resume', session.id] : [],
+    shellPath: claude, shellArgs: session ? ['--resume', session.id, 'continue'] : [],
   }).show();
 }
 

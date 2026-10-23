@@ -102,7 +102,7 @@ test('every PR row carries one Claude control, and clicking it asks the host wit
   assert.equal(saved, 0, 'the Claude control must not collapse or expand its row');
 });
 
-test("a PR's newest Claude session resumes in a terminal, in the folder it started in", async (t) => {
+test("a PR's newest Claude session resumes in a terminal and continues, in the folder it started in", async (t) => {
   const f = fixture(t);
   f.session('11111111-1111-4111-8111-111111111111', 'pr-7: clear review status');
   f.session('22222222-2222-4222-8222-222222222222', 'PR-7: clear review status', f.repo);
@@ -113,14 +113,14 @@ test("a PR's newest Claude session resumes in a terminal, in the folder it start
   f.terminals.push(f.terminal('Claude pr-70', 0), f.terminal('Claude pr-7', 0, { code: 0 }));
   await f.click();
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, env: { MINION_HQ_CLAUDE_PR: f.repo },
-    shellPath: f.claude, shellArgs: ['--resume', '22222222-2222-4222-8222-222222222222'] }]);
+    shellPath: f.claude, shellArgs: ['--resume', '22222222-2222-4222-8222-222222222222', 'continue'] }]);
   assert.deepEqual(f.shown, ['claude']);
 
   f.created.length = 0;
   f.session('77777777-7777-4777-8777-777777777777', 'pr-7: clear review status');
   await f.click();
   assert.equal(f.created[0].cwd, f.workspace);
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['--resume', '77777777-7777-4777-8777-777777777777']);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['--resume', '77777777-7777-4777-8777-777777777777', 'continue']);
   assert.deepEqual(f.errors, []);
 });
 
@@ -179,7 +179,7 @@ test('a running session is focused in the terminal holding it and never resumed 
   // A record whose pid now belongs to another process is stale.
   f.live(id, process.pid, '1');
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['--resume', id]);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['--resume', id, 'continue']);
 });
 
 test('unknown and non-PR rows open nothing, and a missing claude CLI is reported', async (t) => {

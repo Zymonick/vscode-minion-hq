@@ -231,12 +231,15 @@ back the Claude sessions of its terminals at its next start:
 ## Codex per PR
 
 Every PR row also carries one small Codex terminal icon with a Codex tooltip,
-opening the interactive CLI in a VS Code terminal. Name the terminal
-`pr-N · Codex`, with the PR number first so it stays visible in narrow tabs.
-Use this fixed name instead of the CLI's live activity title: resumed sessions
-can have a title without a PR and an original folder outside the PR worktree.
+opening the interactive CLI in a VS Code terminal. Leave its name unset so
+Codex's live title shows its activity indicator, including work and requests
+for input. Set `tui.terminal_title` for this CLI invocation to `activity` followed
+by `thread-title` for a resumed session, or `current-dir` for a new session.
+The saved PR session title identifies resumed work even when its original
+folder lies outside the PR worktree; a new session uses the PR folder name.
 Do not change global settings, poll session state, or start background jobs.
-Existing terminals retain their current labels until reopened from the PR control.
+Existing terminals retain fixed names until their name is cleared or they are
+reopened from the PR control.
 Associate each terminal with its PR path in `MINION_HQ_CODEX_PR` so title
 updates and manual renames do not open duplicate terminals. Continue to
 recognize existing `Codex pr-N` terminals. Focus that terminal when it is running;

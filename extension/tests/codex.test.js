@@ -7,7 +7,9 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
 const id = (n) => '11111111-1111-7111-8111-' + String(n).padStart(12, '0');
-const connectionArgs = ['--remote', 'unix://', '--approve-for-me'];
+const connectionArgs = ['--remote', 'unix://', '--approve-for-me',
+  '-c', 'tui.terminal_title=["activity","thread-title"]'];
+const newSessionArgs = [...connectionArgs.slice(0, -1), 'tui.terminal_title=["activity","current-dir"]'];
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-codex-'));
@@ -139,17 +141,17 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   const archived = f.session(11);
   fs.renameSync(archived, path.join(f.home, '.codex', 'archived-' + path.basename(archived)));
   await f.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'pr-7 · Codex', cwd: f.repo,
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo,
     shellPath: f.codex, shellArgs: ['resume', ...connectionArgs, id(2)],
     env: { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: path.join(f.home, '.codex'), CODEX_SQLITE_HOME: null } }]);
-  assert.deepEqual(f.shown, ['pr-7 · Codex']);
+  assert.deepEqual(f.shown, ['codex']);
   assert.deepEqual(f.errors, []);
 
   f.terminals.length = 0;
   f.session(12);
   await f.click();
   assert.equal(f.created[1].cwd, f.workspace);
-  assert.equal(f.created[1].name, 'pr-7 · Codex', 'the PR stays visible for sessions started in Kylie');
+  assert.equal(f.created[1].name, undefined, 'a fixed name would hide live activity for a resumed session');
   assert.deepEqual(Array.from(f.created[1].shellArgs), ['resume', ...connectionArgs, id(12)]);
 });
 
@@ -183,12 +185,12 @@ test('CODEX_HOME is honored for sessions without recorded runtimes', async (t) =
   assert.deepEqual({ ...f.created[0].env }, { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: f.env.CODEX_HOME, CODEX_SQLITE_HOME: f.env.CODEX_SQLITE_HOME });
 });
 
-test('new Codex terminals show the PR first and remain attached after manual renames', async (t) => {
+test('Codex owns the live activity title; the PR stays attached through title changes and manual renames', async (t) => {
   const f = fixture(t);
   f.session(1, { cwd: null });
   await Promise.all([f.click(), f.click()]);
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'pr-7 · Codex', cwd: f.repo, shellPath: f.codex,
-    env: { MINION_HQ_CODEX_PR: f.repo }, shellArgs: connectionArgs }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, shellPath: f.codex,
+    env: { MINION_HQ_CODEX_PR: f.repo }, shellArgs: newSessionArgs }]);
   const own = f.terminals[0];
   own.name = 'Codex Working pr-7';
   await f.click();
@@ -197,7 +199,7 @@ test('new Codex terminals show the PR first and remain attached after manual ren
   own.name = 'Renamed terminal';
   await f.click();
   assert.equal(f.created.length, 1);
-  assert.deepEqual(f.shown, ['pr-7 · Codex', 'Codex Working pr-7', 'Codex Idle pr-7', 'Renamed terminal']);
+  assert.deepEqual(f.shown, ['codex', 'Codex Working pr-7', 'Codex Idle pr-7', 'Renamed terminal']);
   own.exitStatus = { code: 0 };
   await f.click();
   assert.equal(f.created.length, 2, 'an exited terminal can be reopened');

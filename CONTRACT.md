@@ -31,6 +31,10 @@ whether a file is committed. These worktrees show no Staged or Changes section, 
 expanded row shows no line totals. A checkout without a `master` comparison,
 such as `master` itself, shows Staged and Changes sections.
 
+A collapsed worktree row behind `master` shows a red `↓N` directly after its
+name, N being the master commits missing from the branch, with a tooltip. A
+narrow view never truncates it. A row not behind shows nothing.
+
 ## File groups
 
 Staged, Changes, Vs master, and commit file lists show their files in groups,

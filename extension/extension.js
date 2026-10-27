@@ -1352,6 +1352,7 @@ function getHtml(nonce) {
   .st-D { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .st-R, .st-C { color: var(--vscode-gitDecoration-renamedResourceForeground); }
   .behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+  .behind-n { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; }
   .empty { padding: 8px; opacity: .6; }
   .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em; flex: none;
            animation: agentpulse 2s ease-in-out infinite; }
@@ -1617,13 +1618,16 @@ function render() {
     let repoDim = esc(r.pr && r.pr.label ? r.pr.label : r.branch);
     // An open branch row leaves its totals to the Vs master row below it.
     let repoCols = !r.vsMaster && (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
+    let behindHtml = '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
       repoCols = dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
         + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false);
-      if (v.behind) repoDim += ' <span class="behind">↓' + v.behind + '</span>';
+      // Beside the name, not in the label, which a narrow view truncates first.
+      if (v.behind) behindHtml = '<span class="behind behind-n" title="' + v.behind
+        + (v.behind === 1 ? ' commit' : ' commits') + ' behind master">↓' + v.behind + '</span>';
     }
-    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
+    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
       btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 

@@ -89,6 +89,22 @@ test('bulk actions support an empty view', () => {
   assert.equal(v.messages.filter((m) => m.type === 'expandCommit').length, 0);
 });
 
+test('a collapsed worktree shows its behind count beside the name, outside the truncated label', () => {
+  const v = view();
+  const behind = repo('/a');
+  behind.vsMaster.behind = 3;
+  behind.pr = { label: '#7768 - a long label that a narrow view truncates' };
+  v.send({ type: 'data', repos: [behind, repo('/b')] });
+  v.provider.setExpansion('collapse');
+  assert.match(v.root.innerHTML, /<span class="name">\/a<\/span><span class="behind behind-n" title="3 commits behind master">↓3<\/span>/);
+  assert.doesNotMatch(v.root.innerHTML, /<span class="dim">[^<]*<span class="behind/);
+  assert.equal(v.root.innerHTML.match(/behind-n/g).length, 1);
+
+  v.provider.setExpansion('expand');
+  assert.doesNotMatch(v.root.innerHTML, /behind-n/);
+  assert.match(v.root.innerHTML, /↓3 behind master/);
+});
+
 test('opening a worktree also opens its Vs master section', () => {
   const v = view();
   v.send({ type: 'data', repos: [repo('/a')] });

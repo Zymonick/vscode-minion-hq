@@ -15,7 +15,8 @@ Kylie app or area the PR works on; a word that does not match
 with `minion-` belong to `minion`. Once any row has a group, every row except
 Kylie appears under one header for each group, with the group name and its row
 count. Headers follow group names in case-insensitive order, and rows without a
-group follow last under `no group`; inside a header, rows keep the order above.
+group follow last under `no group`; inside a header, rows keep the order above
+and indent one level, with everything they open.
 A click on a header collapses or opens its rows. Collapse All and Expand All
 leave the headers as they are. Without any group, no header appears.
 

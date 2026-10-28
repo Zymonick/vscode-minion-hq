@@ -1612,6 +1612,7 @@ function render() {
         name: esc(key || 'no group') + ' (' + members + ')', act: 't|p|' + key + '|0' });
     }
     if (key !== null && isCollapsed('p|' + key, false)) continue;
+    const d = key === null ? 0 : 1; // rows under a group header indent one level
     const rid = 'r|' + r.repoPath;
     const rc = isCollapsed(rid, false);
     const t = r.totals;
@@ -1655,7 +1656,7 @@ function render() {
       if (v.behind) behindHtml = '<span class="behind behind-n" title="' + v.behind
         + (v.behind === 1 ? ' commit' : ' commits') + ' behind master">↓' + v.behind + '</span>';
     }
-    h += row(0, { hdr: true, twist: rc, name: esc(r.name), tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
+    h += row(d, { hdr: true, twist: rc, name: esc(r.name), tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
       btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
     if (rc) continue;
 
@@ -1669,9 +1670,9 @@ function render() {
       const sid = 's|' + r.repoPath + '|' + kind;
       const sc = isCollapsed(sid, dflt);
       const st = sumFiles(files);
-      h += row(1, { hdr: true, twist: sc, name: esc(label) + ' (' + files.length + ')',
+      h += row(d + 1, { hdr: true, twist: sc, name: esc(label) + ' (' + files.length + ')',
         cols: cols(st.add, st.del, null, false), act: 't|' + sid + '|' + (dflt ? 1 : 0) });
-      if (!sc) h += groupedFiles(2, r.repoPath, kind, files,
+      if (!sc) h += groupedFiles(d + 2, r.repoPath, kind, files,
         (depth, f) => fileRow(depth, r.repoPath, f, (kind === 'staged' ? 's|' : 'w|') + r.repoPath + '|' + f.path));
     }
 
@@ -1682,12 +1683,12 @@ function render() {
       const behind = v.behind
         ? '<span class="behind">↓' + v.behind + ' behind master</span>'
         : 'not behind master';
-      h += row(1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
+      h += row(d + 1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
         cols: dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
           + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false),
         act: 't|' + vid + '|0' });
-      if (!vc) h += groupedFiles(2, r.repoPath, 'vsmaster', v.files,
+      if (!vc) h += groupedFiles(d + 2, r.repoPath, 'vsmaster', v.files,
         (depth, f) => fileRow(depth, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
           f.vendor && !f.cx ? vendorCell(f.vendor) : v.cx ? cxCell(f.cx || null) : ''));
     }
@@ -1695,19 +1696,19 @@ function render() {
     if (r.commits.length) {
       const cid = 's|' + r.repoPath + '|commits';
       const cc = isCollapsed(cid, true);
-      h += row(1, { hdr: true, twist: cc, name: esc(r.commitsLabel), act: 't|' + cid + '|1' });
+      h += row(d + 1, { hdr: true, twist: cc, name: esc(r.commitsLabel), act: 't|' + cid + '|1' });
       if (!cc) for (const c of r.commits) {
         const kid = 'c|' + r.repoPath + '|' + c.hash;
         const kc = isCollapsed(kid, true);
-        h += row(2, { twist: kc, name: esc(c.subject), dim: esc(c.short + ' · ' + c.when),
+        h += row(d + 2, { twist: kc, name: esc(c.subject), dim: esc(c.short + ' · ' + c.when),
           cols: cols(c.add, c.del, null, false), act: 'e|' + kid + '|1' });
         if (!kc) {
           const key = r.repoPath + '|' + c.hash;
           const files = commitFiles[key];
           if (!files) {
-            h += row(3, { name: '<span class="dim">loading…</span>' });
+            h += row(d + 3, { name: '<span class="dim">loading…</span>' });
           } else {
-            h += groupedFiles(3, r.repoPath, 'c:' + c.hash, files,
+            h += groupedFiles(d + 3, r.repoPath, 'c:' + c.hash, files,
               (depth, f) => fileRow(depth, r.repoPath, f, 'k|' + r.repoPath + '|' + c.hash + '|' + f.path));
           }
         }

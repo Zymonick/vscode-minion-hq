@@ -119,3 +119,27 @@ test('opening a worktree also opens its Vs master section', () => {
   assert.equal(v.saved().collapsed['r|/a'], true);
   assert.equal(v.saved().collapsed['s|/a|vsmaster'], false);
 });
+
+test('PR rows sit under one header per group, Kylie first and rows without a group last', () => {
+  const v = view();
+  const rows = ['/kylie', '/pr-3', '/pr-5', '/pr-7', '/minion-x'].map((p) => ({ ...repo(p), name: p.slice(1) }));
+  rows[1].group = 'wawiData';
+  rows[3].group = 'invoice';
+  rows[4].group = 'minion';
+  v.send({ type: 'data', repos: rows });
+  v.provider.setExpansion('collapse');
+  const names = [...v.root.innerHTML.matchAll(/<span class="name">([^<]*)<\/span>/g)].map((m) => m[1]);
+  assert.deepEqual(names, ['kylie', 'invoice (1)', 'pr-7', 'minion (1)', 'minion-x',
+    'wawiData (1)', 'pr-3', 'no group (1)', 'pr-5']);
+  assert.match(v.root.innerHTML, /<div class="row grp"[^>]*data-act="t\|p\|invoice\|0"><span class="twist">▾/);
+
+  const click = (act) => v.events.click({ target: { closest: (s) => s === '.row' ? { dataset: { act } } : null } });
+  click('t|p|invoice|0');
+  assert.equal(v.saved().collapsed['p|invoice'], true);
+  assert.doesNotMatch(v.root.innerHTML, /<span class="name">pr-7</);
+  v.provider.setExpansion('expand');
+  assert.equal(v.saved().collapsed['p|invoice'], true);
+
+  v.send({ type: 'data', repos: rows.map((r) => ({ ...r, group: '' })) });
+  assert.doesNotMatch(v.root.innerHTML, /data-act="t\|p\|/);
+});

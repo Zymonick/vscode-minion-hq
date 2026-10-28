@@ -311,9 +311,12 @@ async function collectRepo(repoPath, testing) {
     ci.state = 'testing'; ci.reason = 'A CI operation is running'; ci.checkLabel = 'Checks running';
   }
   const pr = await collectPr(repoPath, masterSha, testing, ci);
+  const name = path.basename(repoPath);
   return {
     repoPath,
-    name: path.basename(repoPath),
+    name,
+    // `ci group` names a PR's Kylie app or area; Minion HQ's own checkouts are minion work.
+    group: pr ? pr.group : name.startsWith('minion-') ? 'minion' : '',
     branch,
     staged,
     unstaged,
@@ -330,6 +333,7 @@ async function collectRepo(repoPath, testing) {
 
 const SUMMARY_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){2}$/;
 const CASE_NUMBER_RE = /^[1-9][0-9]{0,6}$/;
+const GROUP_RE = /^[a-z][A-Za-z]{1,19}$/; // scripts/ci GROUP_RE
 
 // ── Excluded worktrees ──────────────────────────────────────────────────────
 // A repository's worktree list also carries checkouts that are nobody's work:
@@ -610,6 +614,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   const slug = readCiState(ciState, 'pr-' + serial + '.slug');
   const label = labelFrom(slug, readCiState(ciState, 'pr-' + serial + '.case'));
   const origin = originFrom(readCiState(ciState, 'pr-' + serial + '.from'), serial);
+  const group = readCiState(ciState, 'pr-' + serial + '.group');
   const known = fs.existsSync(ciState); // an unrelated repo named pr-N stays untagged
   let status = '', statusLabel;
   if ((await landedSerials(repoPath, masterSha)).has(serial)) status = 'landed';
@@ -618,6 +623,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
     statusLabel, customLabel: readiness && readiness.customLabel, origin,
+    group: GROUP_RE.test(group || '') ? group : '',
     conflicts: (readiness && readiness.conflicts) || [],
     shots: shotsSummary(repoPath, serial), estimate: estimateSummary(repoPath, serial) } : null;
 }
@@ -1576,14 +1582,36 @@ function groupedFiles(depth, repoPath, list, files, fileHtml) {
   return h;
 }
 
+// Once any row has a group, rows sit under one header per group in name order.
+// Kylie stays first without a header; rows without a group follow under "no group".
+function groupKey(r) {
+  return r.name.toLowerCase() === 'kylie' ? null : r.group || '';
+}
+
+function groupRank(r) {
+  const key = groupKey(r);
+  return key === null ? '0' : key ? '1' + key.toLowerCase() : '2';
+}
+
 function render() {
   const root = document.getElementById('root');
   if (!repos.length) {
     root.innerHTML = '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>';
     return;
   }
+  const grouped = repos.some((r) => r.group);
+  const shown = grouped ? [...repos].sort((a, b) => groupRank(a).localeCompare(groupRank(b))) : repos;
   let h = '';
-  for (const r of repos) {
+  let header = null;
+  for (const r of shown) {
+    const key = grouped ? groupKey(r) : null;
+    if (key !== null && key !== header) {
+      header = key;
+      const members = shown.filter((o) => groupKey(o) === key).length;
+      h += row(0, { grp: true, twist: isCollapsed('p|' + key, false),
+        name: esc(key || 'no group') + ' (' + members + ')', act: 't|p|' + key + '|0' });
+    }
+    if (key !== null && isCollapsed('p|' + key, false)) continue;
     const rid = 'r|' + r.repoPath;
     const rc = isCollapsed(rid, false);
     const t = r.totals;

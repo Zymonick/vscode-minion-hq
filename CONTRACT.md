@@ -9,6 +9,16 @@ repository additions or removals, regardless of Git's discovery order.
 Rediscovering the same repositories in a different order must not restart
 their active scan.
 
+A PR's group is the word in `.ci/pr-N.group` that `ci group` records, the
+Kylie app or area the PR works on; a word that does not match
+`^[a-z][A-Za-z]{1,19}$` reads as no group. Worktrees whose folder name starts
+with `minion-` belong to `minion`. Once any row has a group, every row except
+Kylie appears under one header for each group, with the group name and its row
+count. Headers follow group names in case-insensitive order, and rows without a
+group follow last under `no group`; inside a header, rows keep the order above.
+A click on a header collapses or opens its rows. Collapse All and Expand All
+leave the headers as they are. Without any group, no header appears.
+
 ## Loading
 
 While a repository without a row is read, the view title shows a spinning

@@ -270,6 +270,21 @@ test('a recorded origin PR renders before the custom label', async (t) => {
   }
 });
 
+test('a recorded group reaches the PR row and a malformed one reads as none', async (t) => {
+  const f = fixture(t);
+  const file = path.join(path.dirname(f.repo), '.ci', 'pr-7.group');
+  assert.equal((await f.collectPr(f.repo, 'master', new Set(), null)).group, '');
+  for (const [value, group] of [['wawiData', 'wawiData'], [' invoice\n', 'invoice'], ['in voice', ''], ['Invoice', ''], ['x', '']]) {
+    fs.writeFileSync(file, value);
+    assert.equal((await f.collectPr(f.repo, 'master', new Set(), null)).group, group, value);
+  }
+  fs.writeFileSync(file, 'invoice');
+  assert.equal((await f.collectRepo(f.repo)).group, 'invoice');
+  const minion = path.join(path.dirname(f.repo), 'minion-x');
+  fs.mkdirSync(minion);
+  assert.equal((await f.collectRepo(minion)).group, 'minion');
+});
+
 test('open-PR conflicts render after the custom label and a malformed list is unavailable', async (t) => {
   const f = fixture(t);
   const root = { innerHTML: '' };

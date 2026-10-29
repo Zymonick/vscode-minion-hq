@@ -40,6 +40,7 @@ fi
 tmux set-option -t "$SESSION" status-style 'bg=#1b1e25,fg=#c8ccd4' \; \
   set-option -t "$SESSION" status-left '#[fg=#8fe3a0,bold][#S] ' \; \
   set-option -t "$SESSION" status-right '%H:%M %d-%b-%y' \; \
+  set-option -t "$SESSION" mouse on \; \
   set-hook -t "$SESSION" session-window-changed "run-shell '$SELF follow #{window_id}'"
 for window in $(tmux list-windows -t "=$SESSION" -F '#{window_id}'); do
   style_window "$window"

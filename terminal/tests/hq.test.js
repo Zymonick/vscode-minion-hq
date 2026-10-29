@@ -67,6 +67,7 @@ test('the sidebar follows the window that shows', { skip: !hasTmux && 'tmux is n
   const sidebar = () => tmux('list-panes', '-s', '-t', 'kylie', '-F', '#{@minion_hq} #{window_index} #{pane_left} #{pane_width}')
     .split('\n').filter((row) => row.startsWith('1 '));
   assert.deepEqual(sidebar(), ['1 0 0 46']);
+  assert.equal(tmux('show-options', '-v', '-t', 'kylie', 'mouse'), 'on');
   tmux('new-window', '-t', 'kylie');
   for (let i = 0; i < 30 && sidebar()[0] !== '1 1 0 46'; i++) await new Promise((r) => setTimeout(r, 100));
   assert.deepEqual(sidebar(), ['1 1 0 46']);

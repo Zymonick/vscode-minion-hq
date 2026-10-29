@@ -326,9 +326,10 @@ creating it with a `shell` window in `/home/azrael/kylie`. The session holds at
 most one sidebar pane, marked with the pane option `@minion_hq`, which runs
 `terminal/hq.js`. On every `session-window-changed`, the sidebar moves to the
 full-height left edge of the shown window, 46 columns wide, without taking
-focus; a window left empty by the move closes. The launcher sets only session
-options and the window options of the session's windows; global tmux options
-stay unchanged.
+focus; a window left empty by the move closes. The session option `mouse` is
+always on, so a click selects a pane and reaches the sidebar, and the wheel
+scrolls. The launcher sets only session options and the window options of the
+session's windows; global tmux options stay unchanged.
 
 `terminal/hq.js` loads `extension/extension.js` unchanged with a stub `vscode`
 module, as the extension tests do, and reuses its collectors, refresh order,

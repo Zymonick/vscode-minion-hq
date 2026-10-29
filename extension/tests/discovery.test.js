@@ -23,7 +23,6 @@ function start(groups, initial, { deferred = false, excluded = [] } = {}) {
     window: {
       createOutputChannel: () => ({ appendLine() {} }),
       onDidOpenTerminal: disposable,
-      onDidCloseTerminal: disposable,
       registerWebviewViewProvider: (id, value) => { provider = value; return disposable(); },
       registerFileDecorationProvider: disposable,
     },

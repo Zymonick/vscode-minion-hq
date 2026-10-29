@@ -1374,11 +1374,6 @@ function getHtml(nonce) {
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .shots { color: var(--vscode-charts-green, #89d185); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .claude:hover, .codex:hover, .shots:hover { opacity: 1; }
-  /* Sessions shown here: a terminal's live title mark, pulsing ◐ while it works, green ✳ while it waits for input. */
-  .claude-live { opacity: 1; }
-  .term-mark { display: inline-block; width: 1.4em; text-align: center; color: var(--vscode-charts-orange, #d18616); }
-  .claude-working, .term-working { animation: agentpulse 2s ease-in-out infinite; }
-  .claude-idle, .term-idle { color: var(--vscode-charts-green, #89d185); }
   .prst, .pr-origin, .pr-custom-label, .pr-conflicts { margin-left: 7px; font-size: .85em; font-weight: 600; cursor: default; }  .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
   .pr-conflicts { color: var(--vscode-editorWarning-foreground, #cca700); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
@@ -1408,7 +1403,6 @@ window.addEventListener('error', (e) => vscode.postMessage({ type: 'error', mess
 let repos = [];
 let loading = true;
 let agents = {};
-let sessions = null;
 const commitFiles = {};
 const pendingCommitFiles = new Set();
 const state = vscode.getState() || { collapsed: {} };
@@ -1555,8 +1549,7 @@ function vendorCell(name) {
 function row(depth, opts) {
   const twist = opts.twist === undefined ? '<span class="twist"></span>'
     : '<span class="twist">' + (opts.twist ? '▸' : '▾') + '</span>';
-  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + '" style="--depth:' + depth + '" data-act="' + esc(opts.act || '') + '"'
-    + (opts.tip ? ' title="' + esc(opts.tip) + '"' : '') + '>'
+  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + '" style="--depth:' + depth + '" data-act="' + esc(opts.act || '') + '">'
     + twist
     + '<span class="name">' + opts.name + '</span>'
     + (opts.tag || '')
@@ -1565,16 +1558,6 @@ function row(depth, opts) {
     + '<span class="spacer"></span>'
     + (opts.cols || '')
     + '</div>';
-}
-
-function markClass(mark, prefix) {
-  return mark === '◐' ? ' ' + prefix + '-working' : mark === '✳' ? ' ' + prefix + '-idle' : '';
-}
-
-// A terminal of no PR row, below Kylie; a click focuses it.
-function terminalRow(s) {
-  return row(1, { name: '<span class="term-mark' + markClass(s.mark, 'term') + '">' + esc(s.mark) + '</span>' + esc(s.title),
-    tip: s.title, act: 'x|' + s.id });
 }
 
 function fileRow(depth, repoPath, f, act, lead) {
@@ -1631,8 +1614,6 @@ function render() {
   const shown = grouped ? [...repos].sort((a, b) => groupRank(a).localeCompare(groupRank(b))) : repos;
   let h = '';
   let header = null;
-  // With sessions shown here, terminals of no PR row follow the Kylie row, or lead without one.
-  let otherHtml = sessions ? sessions.other.map(terminalRow).join('') : '';
   for (const r of shown) {
     const key = grouped ? groupKey(r) : null;
     if (key !== null && key !== header) {
@@ -1655,15 +1636,9 @@ function render() {
       agentHtml = '<span class="agent" title="agent session(s) working in this worktree: '
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
-    // Each PR opens its Claude or Codex prompt in a VS Code terminal. With
-    // sessions shown here, a running Claude terminal lends the control its live mark.
-    const live = r.pr && sessions && sessions.byRepo[r.repoPath];
-    const claudeHtml = !r.pr ? '' : live
-      ? '<span class="claude claude-live' + markClass(live.mark, 'claude') + '" data-claude="' + esc(r.repoPath)
-        + '" data-terminal="' + esc(live.id) + '" title="' + esc('Claude: focus the terminal ' + live.title) + '">'
-        + esc(live.mark || '✻') + '</span>'
-      : '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
-        + esc('Claude: open the terminal for ' + r.name + ', continuing its session or starting one') + '">✻</span>';
+    // Each PR opens its Claude or Codex prompt in a VS Code terminal.
+    const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
+      + esc('Claude: open the terminal for ' + r.name + ', continuing its session or starting one') + '">✻</span>' : '';
     const codexHtml = r.pr ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
       + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
       + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Codex">'
@@ -1694,10 +1669,6 @@ function render() {
     }
     h += row(d, { hdr: true, twist: rc, name: esc(r.name), tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
       btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
-    if (r.name.toLowerCase() === 'kylie') {
-      h += otherHtml;
-      otherHtml = '';
-    }
     if (rc) continue;
 
     // A branch lists uncommitted work inside Vs master instead.
@@ -1755,15 +1726,13 @@ function render() {
       }
     }
   }
-  root.innerHTML = otherHtml + h;
+  root.innerHTML = h;
 }
 
 document.addEventListener('click', (ev) => {
   const claude = ev.target.closest('.claude');
   if (claude) {
-    vscode.postMessage(claude.dataset.terminal
-      ? { type: 'terminal', id: Number(claude.dataset.terminal) }
-      : { type: 'claude', repoPath: claude.dataset.claude });
+    vscode.postMessage({ type: 'claude', repoPath: claude.dataset.claude });
     return;
   }
   const codex = ev.target.closest('.codex');
@@ -1811,8 +1780,6 @@ document.addEventListener('click', (ev) => {
   } else if (type === 'k') {
     const [repoPath, hash, ...p] = rest.split('|');
     vscode.postMessage({ type: 'open', mode: 'commit', repoPath, hash, path: p.join('|') });
-  } else if (type === 'x') {
-    vscode.postMessage({ type: 'terminal', id: Number(rest) });
   }
 });
 
@@ -1823,7 +1790,6 @@ window.addEventListener('message', (ev) => {
   } else if (m.type === 'data') {
     loading = !!m.loading;
     agents = m.agents || {};
-    sessions = m.sessions || null;
     repos = m.repos;
     render();
   }
@@ -1907,9 +1873,8 @@ function procStat(pid) {
   return { ppid: +f[1], start: f[19] };
 }
 
-function scanAgents(repoPaths, byTitle = false) {
-  // agent processes (claude/codex) attributed to the repo they work in;
-  // with sessions shown here, a Claude session's PR title decides first
+function scanAgents(repoPaths) {
+  // agent processes (claude/codex) attributed to the repo they work in
   const map = {};
   const candidates = [];
   let pids = [];
@@ -1935,8 +1900,7 @@ function scanAgents(repoPaths, byTitle = false) {
     if (agentPids.has(c.ppid)) continue;
     let repo = null, name = '';
     if (c.kind === 'claude') {
-      const own = byTitle && claudeRecord(c.pid);
-      const s = (own && claudeTitleRepo(own.id, repoPaths)) || claudeSessionRepo(c, repoPaths);
+      const s = claudeSessionRepo(c, repoPaths);
       if (s) { repo = s.repo; name = s.name; }
     }
     if (!repo) {
@@ -2143,76 +2107,6 @@ function claudeSessionWatch(record) {
   };
 }
 
-// ── Sessions in Minion HQ ───────────────────────────────────────────────────
-// With scmDiffStats.sessions on, the view takes over VS Code's terminal tab
-// list: a PR row's Claude control shows the live title mark of the PR's Claude
-// terminal, and every other terminal of the window gets a row below Kylie.
-// VS Code passes each title change to Terminal.name.
-const WORKING_MARKS = /^[◐◑◒◓⠀-⣿]$/u;
-const terminalIds = new WeakMap();
-let lastTerminalId = 0;
-
-function sessionsEnabled() {
-  return vscode.workspace.getConfiguration('scmDiffStats').get('sessions') === true;
-}
-
-// The view-title toggle writes the user setting; every window follows it.
-function setSessions(on) {
-  return vscode.workspace.getConfiguration('scmDiffStats').update('sessions', on, vscode.ConfigurationTarget.Global);
-}
-
-// The terminal tab list hides while the view shows the sessions; off restores the default.
-async function syncTerminalTabs(on) {
-  const terminal = vscode.workspace.getConfiguration('terminal.integrated');
-  const value = terminal.inspect('tabs.enabled')?.globalValue;
-  if (on && value !== false) await terminal.update('tabs.enabled', false, vscode.ConfigurationTarget.Global);
-  else if (!on && value === false) await terminal.update('tabs.enabled', undefined, vscode.ConfigurationTarget.Global);
-}
-
-// A live title's leading mark (◐ working, ✳ idle or waiting for input, ⏳ or ⏰
-// waiting on its own) and its text. Spinner frames read as one mark.
-function titleMark(name) {
-  const m = /^([^\p{L}\p{N}\s\[(#~\/.-]{1,2})\s+(.*)$/u.exec(name || '');
-  if (!m) return { mark: '', title: name || '' };
-  return { mark: WORKING_MARKS.test(m[1]) ? '◐' : m[1], title: m[2] };
-}
-
-// The PR row of a Claude session: the pr-N its `.ci/session-titles` record begins with.
-function claudeTitleRepo(sessionId, repoPaths) {
-  if (!/^[\w-]+$/.test(sessionId)) return null;
-  const prs = repoPaths.filter((rp) => /^pr-\d+$/.test(path.basename(rp)));
-  for (const titles of new Set(prs.map((rp) => path.join(ciStateDir(rp), 'session-titles')))) {
-    const title = readCiState(titles, sessionId);
-    const serial = title && /^pr-(\d+)(?![0-9])/i.exec(title);
-    const repo = serial && prs.find((rp) => path.basename(rp) === 'pr-' + serial[1]);
-    if (repo) return { repo, name: title };
-  }
-  return null;
-}
-
-// The window's open terminals: the first Claude terminal of each PR row, by its
-// MINION_HQ_CLAUDE_PR or its session's PR title, and all others in order.
-async function scanTerminals(data) {
-  const repoPaths = [...data.keys()];
-  const byRepo = {}, other = [], ids = new Map();
-  for (const terminal of vscode.window.terminals) {
-    if (terminal.exitStatus) continue;
-    if (!terminalIds.has(terminal)) terminalIds.set(terminal, ++lastTerminalId);
-    const id = terminalIds.get(terminal);
-    ids.set(id, terminal);
-    let repo = terminal.creationOptions?.env?.MINION_HQ_CLAUDE_PR;
-    if (!repo) {
-      const pid = await terminal.processId;
-      const session = pid && claudeInTree(pid);
-      repo = session && claudeTitleRepo(session.id, repoPaths)?.repo;
-    }
-    const entry = { id, ...titleMark(terminal.name) };
-    if (repo && data.get(repo)?.pr && !byRepo[repo]) byRepo[repo] = entry;
-    else other.push(entry);
-  }
-  return { sessions: { byRepo, other }, ids };
-}
-
 // Codex shares the PR title registry, but stores rollouts under CODEX_HOME.
 // Desktop sessions can use a different executable and home from the terminal.
 // Resolve only on click; read candidate metadata, never whole conversations.
@@ -2361,33 +2255,11 @@ class StatsViewProvider {
     this.data = new Map();
     this.fileStats = new Map();
     this.agents = {};
-    this.sessionsOn = false;
-    this.sessions = null;
-    this.terminals = new Map();
-    this.scanningSessions = false;
     this.refreshPromise = null;
     this.refreshPending = false;
     this.loading = true;
     this.channel = vscode.window.createOutputChannel('Minion HQ');
     logChannel = this.channel;
-  }
-
-  // Rescans this window's terminals while the view shows the sessions; pushes only a change.
-  async scanSessions() {
-    if (this.scanningSessions) return;
-    this.scanningSessions = true;
-    try {
-      const { sessions, ids } = this.sessionsOn ? await scanTerminals(this.data) : { sessions: null, ids: new Map() };
-      this.terminals = ids;
-      if (JSON.stringify(sessions) !== JSON.stringify(this.sessions)) {
-        this.sessions = sessions;
-        this.push();
-      }
-    } catch (error) {
-      log('sessions: ' + error.message);
-    } finally {
-      this.scanningSessions = false;
-    }
   }
 
   setExpansion(mode) {
@@ -2426,7 +2298,7 @@ class StatsViewProvider {
         this.refreshPending = false;
         const repos = this.repos;
         const current = () => repos === this.repos;
-        this.agents = scanAgents(repos, this.sessionsOn);
+        this.agents = scanAgents(repos);
         const testing = scanTestingSerials(
           repos.filter((r) => /^pr-\d+$/.test(path.basename(r))));
         const results = new Array(repos.length);
@@ -2502,7 +2374,7 @@ class StatsViewProvider {
     const repos = this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r));
     this.view.webview.postMessage({
       type: 'data', repos, loading: this.loading,
-      agents: this.agents, sessions: this.sessions,
+      agents: this.agents,
     });
   }
 
@@ -2537,9 +2409,6 @@ class StatsViewProvider {
         log('claude: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open Claude for ${repo.name}: ${error.message}`);
       }
-    } else if (m.type === 'terminal') {
-      const terminal = this.terminals.get(m.id);
-      if (terminal && !terminal.exitStatus) terminal.show();
     } else if (m.type === 'codex') {
       const repo = this.data.get(m.repoPath);
       if (!repo || !repo.pr) return;
@@ -2639,9 +2508,6 @@ function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.refresh', () => provider.refresh()));
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.collapseAll', () => provider.setExpansion('collapse')));
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.expandAll', () => provider.setExpansion('expand')));
-  context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.sessionsOn', () => setSessions(true)));
-  context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.sessionsOff', () => setSessions(false)));
-  provider.sessionsOn = sessionsEnabled();
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(EMPTY_SCHEME, {
       provideTextDocumentContent: () => '',
@@ -2763,11 +2629,6 @@ function activate(context) {
 
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(scheduleRefresh));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('scmDiffStats.sessions')) {
-      provider.sessionsOn = sessionsEnabled();
-      syncTerminalTabs(provider.sessionsOn).catch((error) => log('sessions: ' + error.message));
-      provider.scanSessions();
-    }
     // a changed exclude list changes which worktrees have rows at all
     if (e.affectsConfiguration('scmDiffStats.excludePaths')) syncRepos();
     else if (e.affectsConfiguration('scmDiffStats')) provider.refresh();
@@ -2794,21 +2655,17 @@ function activate(context) {
   };
 
   const agentPoll = setInterval(() => {
-    const a = scanAgents(provider.repos, provider.sessionsOn);
+    const a = scanAgents(provider.repos);
     if (JSON.stringify(a) !== JSON.stringify(provider.agents)) {
       provider.agents = a;
       provider.push();
     }
     recordClaudeSessions();
-    provider.scanSessions();
   }, 7000);
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
   // A terminal that opens, or a command that starts in one, may be claude.
   const watch = claudeSessionWatch(recordClaudeSessions);
   context.subscriptions.push(watch, vscode.window.onDidOpenTerminal(watch.start));
-  for (const event of [vscode.window.onDidOpenTerminal, vscode.window.onDidCloseTerminal]) {
-    context.subscriptions.push(event(() => provider.scanSessions()));
-  }
   if (vscode.window.onDidStartTerminalShellExecution) {
     context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(watch.start));
   }

@@ -229,8 +229,7 @@ changes do not open duplicate terminals:
 sends no prompt other than the `continue` of a click-resumed session, and
 starts no CI run or agent work by itself. Clicking the
 control never toggles the row. Look a PR's session up on click, never during
-refresh, polling, or agent scans; with [Sessions](#sessions) on, scans read only
-the title record of each running session.
+refresh, polling, or agent scans.
 
 ## Claude session restore
 
@@ -253,32 +252,6 @@ back the Claude sessions of its terminals at its next start:
 - Plain shells and Codex terminals are not restored.
 - The `Minion HQ` output channel logs each change of the record and, at
   activation, each session resumed or not resumed with the reason.
-
-## Sessions
-
-The user setting `scmDiffStats.sessions`, off by default, moves the window's
-terminal sessions from VS Code's terminal tab list into the view. A view-title
-control turns it on and another turns it off; both write the user setting of
-the window's profile.
-
-- On sets `terminal.integrated.tabs.enabled` to false in the user settings. Off
-  removes that value only when it is false.
-- The first Claude terminal of a PR in this window gives the PR's Claude control
-  its live title mark, and a click focuses that terminal. `◐` pulses while it
-  works, and spinner frames read as one mark. `✳` is green while it is idle or
-  waits for input. Other marks, such as `⏳` and `⏰`, show unchanged.
-- A terminal belongs to a PR through `MINION_HQ_CLAUDE_PR`, or when the title
-  of its Claude session's id in `.ci/session-titles` begins with that `pr-N`.
-  Without such a terminal, the control stays as in [Claude per PR](#claude-per-pr).
-- Every other open terminal of the window gets a row directly below the Kylie
-  row, collapsed or not, in terminal order, with its mark and title. The title is
-  also its tooltip, and a click focuses the terminal. Without a Kylie row, these
-  rows lead the list.
-- The agent marker counts a Claude session on the PR row that its session title
-  names; other sessions keep the transcript attribution.
-- The 7-second agent poll and terminal open and close events rescan the
-  terminals. The view updates only when a mark, title or row changes.
-- Off, the view shows no terminal rows or live marks.
 
 ## Codex per PR
 

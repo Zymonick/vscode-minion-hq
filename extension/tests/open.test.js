@@ -50,7 +50,6 @@ function harness(childProcess = cp) {
       tabGroups: { all: groups },
       createOutputChannel: () => ({ appendLine() {} }),
       onDidOpenTerminal: disposable,
-      onDidCloseTerminal: disposable,
       showErrorMessage: async (message) => { errors.push(message); },
       showInformationMessage: async (message) => { infos.push(message); },
       registerWebviewViewProvider: (name, value) => { provider = value; return disposable(); },

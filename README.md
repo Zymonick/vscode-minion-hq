@@ -37,6 +37,14 @@ Keep the VS Code window for the target profile open. The installation activates 
 
 Minion HQ updates the existing SCM Diff Stats installation. The extension ID `simon.scm-diff-stats` and `scmDiffStats.*` settings remain compatible with existing installations.
 
+## Terminal
+
+`terminal/minion-hq` opens the tmux session `kylie` with Minion HQ as a 46-column sidebar that moves to the left of every window you switch to. Install the command once with `ln -s "$PWD/terminal/minion-hq" "$HOME/.local/bin/minion-hq"`, then run `minion-hq` from any shell, inside tmux or not.
+
+The sidebar lists the PR and other worktrees of `/home/azrael/kylie` with the agent glyph, the CI status, conflicts and `↓N`. Below the list, the selected row shows its lines, `est`, `cx`, files, screenshots, group totals and the complete readiness reasons. Keys: `↑`/`↓` or `j`/`k` select, `↵` opens or closes the file list, `d` or `↵` on a file shows its diff from the merge base in a popup (`d` on a PR row shows the whole branch), `c` Claude, `x` Codex, `s` screenshots, `r` refresh, `q` quit. With tmux `mouse on`, a click selects a row and a second click opens it.
+
+`c` and `x` open the PR's agent in a tmux window named after the PR, with the same session rules as the panel's controls. The status bar and the PR row show `◐` while the agent works and `✳` while it waits. The sidebar reads `scmDiffStats.*` settings from `~/.vscode-server/data/Machine/settings.json` and runs the extension's own collectors, so its numbers match the panel.
+
 ## Deploy
 
 Keep the Kylie VS Code window open in its `minion-hq-minimal` profile. Run `/home/azrael/.local/bin/minion-hq-deploy` from any folder, optionally followed by a quoted commit message. It runs CI, commits all pending changes in its Minion HQ checkout, pushes that checkout's current branch to `origin`, and installs into the default profile and existing Minion HQ profiles in the target extension host.
@@ -49,7 +57,7 @@ Install the command once from the desired checkout with `mkdir -p "$HOME/.local/
 
 ## Develop
 
-Everything lives in `extension/extension.js` (plain JS, no build step, no dependencies).
+Everything lives in `extension/extension.js` (plain JS, no build step, no dependencies); the terminal sidebar in `terminal/` reuses it.
 
 Use Node.js 24, Python 3, and Bash. With nvm installed, run `nvm use` to select the project’s Node version. No npm dependencies are required.
 

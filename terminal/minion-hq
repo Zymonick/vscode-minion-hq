@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Minion HQ in tmux: session kylie with the Minion HQ sidebar, which follows the active window.
+set -euo pipefail
+
+HERE=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
+SELF="$HERE/minion-hq"
+SESSION=kylie
+WIDTH=46
+
+hq_pane() {
+  tmux list-panes -s -t "=$SESSION" -F '#{pane_id} #{@minion_hq}' 2>/dev/null | awk '$2 == 1 { print $1; exit }'
+}
+
+# Window options have no session level, so each window of the session gets the style when it shows.
+style_window() {
+  local glyph='#{?#{@minion_glyph}, #{@minion_glyph},}'
+  tmux set-option -w -t "$1" window-status-format " #I:#W$glyph " \; \
+    set-option -w -t "$1" window-status-current-format "#[bg=#c5a3ff,fg=#14161b,bold] #I:#W$glyph " \; \
+    set-option -w -t "$1" pane-active-border-style 'fg=#c5a3ff'
+}
+
+# Hook of session-window-changed: move the sidebar to the left of the window now shown.
+if [[ ${1:-} == follow ]]; then
+  [[ -n ${2:-} ]] || exit 0
+  style_window "$2"
+  hq=$(hq_pane)
+  [[ -n $hq ]] || exit 0
+  [[ $(tmux display-message -p -t "$hq" '#{window_id}') == "$2" ]] && exit 0
+  tmux join-pane -d -f -h -b -l "$WIDTH" -s "$hq" -t "$2"
+  exit 0
+fi
+if [[ $# -gt 0 ]]; then
+  echo 'Usage: minion-hq' >&2
+  exit 2
+fi
+
+if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
+  tmux new-session -d -s "$SESSION" -n shell -c /home/azrael/kylie
+fi
+tmux set-option -t "$SESSION" status-style 'bg=#1b1e25,fg=#c8ccd4' \; \
+  set-option -t "$SESSION" status-left '#[fg=#8fe3a0,bold][#S] ' \; \
+  set-option -t "$SESSION" status-right '%H:%M %d-%b-%y' \; \
+  set-hook -t "$SESSION" session-window-changed "run-shell '$SELF follow #{window_id}'"
+for window in $(tmux list-windows -t "=$SESSION" -F '#{window_id}'); do
+  style_window "$window"
+done
+if [[ -z $(hq_pane) ]]; then
+  pane=$(tmux split-window -P -F '#{pane_id}' -d -f -h -b -l "$WIDTH" -t "=$SESSION:" "exec ${NODE_BIN:-node} '$HERE/hq.js'")
+  tmux set-option -p -t "$pane" @minion_hq 1
+fi
+if [[ -n ${TMUX:-} ]]; then
+  exec tmux switch-client -t "=$SESSION"
+fi
+exec tmux attach-session -t "=$SESSION"

@@ -319,6 +319,39 @@ Files, diffs, and images open in the last editor group.
 Floating editor windows hold the last groups, so these editors open there and
 leave the main window's layout unchanged.
 
+## Terminal
+
+`terminal/minion-hq` attaches to or switches to the tmux session `kylie`,
+creating it with a `shell` window in `/home/azrael/kylie`. The session holds at
+most one sidebar pane, marked with the pane option `@minion_hq`, which runs
+`terminal/hq.js`. On every `session-window-changed`, the sidebar moves to the
+full-height left edge of the shown window, 46 columns wide, without taking
+focus; a window left empty by the move closes. The launcher sets only session
+options and the window options of the session's windows; global tmux options
+stay unchanged.
+
+`terminal/hq.js` loads `extension/extension.js` unchanged with a stub `vscode`
+module, as the extension tests do, and reuses its collectors, refresh order,
+complexity export and session lookups. Rows are the worktrees of
+`/home/azrael/kylie` except the checkout itself, filtered by
+`scmDiffStats.excludePaths` from `~/.vscode-server/data/Machine/settings.json`,
+in [repository order](#repository-order) without group headers. The scan runs
+at start, every 15 seconds and on `r`; it reads readiness only through the
+[PR readiness](#pr-readiness) report. The selected row's detail shows the
+complete readiness reasons, the custom label, origin and conflicts.
+
+`c` and `x` follow [Claude per PR](#claude-per-pr) and
+[Codex per PR](#codex-per-pr) with tmux windows instead of VS Code terminals:
+the agent is the window's process, the window has the PR's folder name, and
+the pane options `@minion_pr` (worktree path) and `@minion_agent` (`claude` or
+`codex`) identify it. A session that runs in another tmux pane is focused
+there; a Claude session outside tmux shows a message with its pid. Every two
+seconds the sidebar reads the agent pane titles and sets the window option
+`@minion_glyph`: `✳` for a title that starts with `✳`, `◐` for one that starts
+with another symbol. The status bar and the PR row show it. Diffs open in a
+tmux popup with `git diff` from the merge base, including rename sources and
+untracked files, paged by `less -R`.
+
 ## Installation
 
 Deployment scripts and installer tests must support Python 3.8, including

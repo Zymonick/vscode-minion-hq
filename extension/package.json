@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.54",
+  "version": "0.13.55",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -54,6 +54,16 @@
         "command": "scmDiffStats.refresh",
         "title": "Refresh Minion HQ",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "scmDiffStats.sessionsOn",
+        "title": "Show the Sessions in Minion HQ",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "scmDiffStats.sessionsOff",
+        "title": "Show the Sessions in the Terminal Tab List",
+        "icon": "$(layout-panel-right)"
       }
     ],
     "menus": {
@@ -83,12 +93,27 @@
           "command": "scmDiffStats.refresh",
           "when": "view == scmDiffStats",
           "group": "navigation"
+        },
+        {
+          "command": "scmDiffStats.sessionsOn",
+          "when": "view == scmDiffStats && !config.scmDiffStats.sessions",
+          "group": "navigation@3"
+        },
+        {
+          "command": "scmDiffStats.sessionsOff",
+          "when": "view == scmDiffStats && config.scmDiffStats.sessions",
+          "group": "navigation@3"
         }
       ]
     },
     "configuration": {
       "title": "Minion HQ",
       "properties": {
+        "scmDiffStats.sessions": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show the window's terminal sessions in Minion HQ instead of the terminal tab list. A PR row's Claude control shows the live title mark of the PR's Claude terminal (pulsing `◐` while it works, green `✳` while it waits for input) and focuses it; every other terminal gets a row below Kylie. On hides the terminal tab list (`terminal.integrated.tabs.enabled`); off shows it again."
+        },
         "scmDiffStats.excludePaths": {
           "type": "array",
           "items": { "type": "string" },

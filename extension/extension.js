@@ -1336,10 +1336,16 @@ function getHtml(nonce) {
   .row { display: flex; align-items: center; height: 22px; cursor: pointer; white-space: nowrap; padding-right: 8px; }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .twist { width: 16px; flex: none; text-align: center; opacity: .8; font-size: .8em; }
+  /* A narrow row gives way in order: labels, then conflicts and agents, then
+     the status or a file name. Header names, ↓N, controls and numbers keep
+     their width. Each tier's flex-shrink dwarfs the next, so it empties first. */
   .name { overflow: hidden; text-overflow: ellipsis; }
-  .hdr .name { font-weight: 600; }
+  .hdr .name { font-weight: 600; flex: none; max-width: 50%; }
   .grp .name { font-size: .85em; text-transform: uppercase; letter-spacing: .04em; opacity: .8; }
-  .dim { opacity: .6; margin-left: 7px; font-size: .9em; overflow: hidden; text-overflow: ellipsis; }
+  .dim, .pr-origin, .pr-custom-label, .pr-conflicts, .agent, .prst { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .dim, .pr-origin, .pr-custom-label { flex-shrink: 1e12; }
+  .pr-conflicts, .agent { flex-shrink: 1e6; }
+  .dim { opacity: .6; margin-left: 7px; font-size: .9em; }
   .spacer { flex: 1; min-width: 8px; }
   .st { width: 1.4em; flex: none; text-align: center; font-weight: 600; }
   .add, .del { width: 3.6em; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
@@ -1360,15 +1366,14 @@ function getHtml(nonce) {
   .behind { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   .behind-n { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; }
   .empty { padding: 8px; opacity: .6; }
-  .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em; flex: none;
+  .agent { color: var(--vscode-charts-yellow, #d7ba7d); margin-left: 8px; font-size: .85em;
            animation: agentpulse 2s ease-in-out infinite; }
   @keyframes agentpulse { 50% { opacity: .4; } }
   .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .shots { color: var(--vscode-charts-green, #89d185); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .claude:hover, .codex:hover, .shots:hover { opacity: 1; }
-  .prst, .pr-origin, .pr-custom-label, .pr-conflicts { margin-left: 7px; flex: none; font-size: .85em; font-weight: 600; cursor: default; }
-  .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
+  .prst, .pr-origin, .pr-custom-label, .pr-conflicts { margin-left: 7px; font-size: .85em; font-weight: 600; cursor: default; }  .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
   .pr-conflicts { color: var(--vscode-editorWarning-foreground, #cca700); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
   .prst-testing { color: var(--vscode-charts-yellow, #d7ba7d); }
@@ -1379,6 +1384,11 @@ function getHtml(nonce) {
   .prst-ready, .prst-ready-to-land { color: var(--vscode-charts-green, #89d185); }
   .prst-open { color: var(--vscode-descriptionForeground); }
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+  @media (max-width: 560px) {
+    .cx { width: 3.9em; margin-right: 2px; }
+    .st { width: 1em; }
+    .add, .del { width: 3em; }
+  }
   .prst-schema { cursor: pointer; }
   .prst-schema:hover { text-decoration: underline; }
 </style>

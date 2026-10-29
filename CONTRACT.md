@@ -46,6 +46,15 @@ A collapsed worktree row behind `master` shows a red `↓N` directly after its
 name, N being the master commits missing from the branch, with a tooltip. A
 narrow view never truncates it. A row not behind shows nothing.
 
+## Narrow view
+
+A row that does not fit truncates its parts with an ellipsis in this order:
+the branch or CI label, the origin and custom labels, the conflicts and agent
+markers, then the task status marker or a file name. Section and worktree
+names, up to half the row, `↓N`, the Claude, Codex and screenshot controls,
+and the number columns keep their full width. Below 560 px the number
+columns become narrower and stay aligned across rows.
+
 ## File groups
 
 Staged, Changes, Vs master, and commit file lists show their files in groups,

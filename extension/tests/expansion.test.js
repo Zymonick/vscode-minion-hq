@@ -151,3 +151,30 @@ test('PR rows sit under one header per group, Kylie first and rows without a gro
   v.send({ type: 'data', repos: rows.map((r) => ({ ...r, group: '' })) });
   assert.doesNotMatch(v.root.innerHTML, /data-act="t\|p\|/);
 });
+
+test('a narrow row truncates labels before markers and keeps names, controls and numbers', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const { getHtml } = vm.runInNewContext(source + '\n({ getHtml });', {
+    module: { exports: {} }, process, Buffer,
+    require: (name) => name === 'vscode' ? { window: { createOutputChannel: () => ({}) } } : require(name),
+  });
+  const css = getHtml('test').match(/<style>([\s\S]*?)<\/style>/)[1];
+  const shrink = (cls) => {
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, sel]) => sel.split(',').some((s) => s.trim() === cls));
+    let value = '1';
+    for (const [, , body] of rules) {
+      const m = body.match(/flex(?:-shrink)?:\s*([^;]+)/);
+      if (m) value = m[1].trim() === 'none' ? '0' : m[1].trim();
+    }
+    return Number(value);
+  };
+  for (const cls of ['.hdr .name', '.behind-n', '.claude', '.codex', '.shots', '.cx', '.st', '.add', '.del']) {
+    assert.equal(shrink(cls), 0, cls);
+  }
+  for (const label of ['.dim', '.pr-origin', '.pr-custom-label']) {
+    for (const marker of ['.pr-conflicts', '.agent']) assert.ok(shrink(label) >= 1e6 * shrink(marker), label + ' ' + marker);
+  }
+  for (const marker of ['.pr-conflicts', '.agent']) assert.ok(shrink(marker) >= 1e6 * shrink('.prst'), marker);
+  assert.ok(shrink('.dim') >= 1e6 * shrink('.name'));
+});

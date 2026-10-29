@@ -1333,7 +1333,8 @@ function getHtml(nonce) {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>
   body { padding: 0; margin: 0; color: var(--vscode-foreground); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); user-select: none; }
-  .row { display: flex; align-items: center; height: 22px; cursor: pointer; white-space: nowrap; padding-right: 8px; }
+  .row { display: flex; align-items: center; height: 22px; cursor: pointer; white-space: nowrap; padding-right: 8px;
+         padding-left: calc(4px + var(--depth) * 14px); }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .twist { width: 16px; flex: none; text-align: center; opacity: .8; font-size: .8em; }
   /* A narrow row gives way in order: labels, then conflicts and agents, then
@@ -1385,6 +1386,7 @@ function getHtml(nonce) {
   .prst-open { color: var(--vscode-descriptionForeground); }
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   @media (max-width: 560px) {
+    .row { padding-left: calc(4px + var(--depth) * 1ch); }
     .cx { width: 3.9em; margin-right: 2px; }
     .st { width: 1em; }
     .add, .del { width: 3em; }
@@ -1545,10 +1547,9 @@ function vendorCell(name) {
 }
 
 function row(depth, opts) {
-  const pad = 4 + depth * 14;
   const twist = opts.twist === undefined ? '<span class="twist"></span>'
     : '<span class="twist">' + (opts.twist ? '▸' : '▾') + '</span>';
-  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + '" style="padding-left:' + pad + 'px" data-act="' + esc(opts.act || '') + '">'
+  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + '" style="--depth:' + depth + '" data-act="' + esc(opts.act || '') + '">'
     + twist
     + '<span class="name">' + opts.name + '</span>'
     + (opts.tag || '')

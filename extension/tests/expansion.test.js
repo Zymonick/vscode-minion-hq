@@ -132,13 +132,13 @@ test('PR rows sit under one header per group, Kylie first and rows without a gro
   assert.deepEqual(names, ['kylie', 'invoice (1)', 'pr-7', 'minion (1)', 'minion-x',
     'wawiData (1)', 'pr-3', 'no group (1)', 'pr-5']);
   assert.match(v.root.innerHTML, /<div class="row grp"[^>]*data-act="t\|p\|invoice\|0"><span class="twist">▾/);
-  const pad = (act) => v.root.innerHTML.match(new RegExp('padding-left:(\\d+)px" data-act="' + act.replace(/\|/g, '\\|') + '"'))[1];
-  assert.equal(pad('t|r|/kylie|0'), '4');
-  assert.equal(pad('t|p|invoice|0'), '4');
-  assert.equal(pad('t|r|/pr-7|0'), '18');
+  const depth = (act) => v.root.innerHTML.match(new RegExp('--depth:(\\d+)" data-act="' + act.replace(/\|/g, '\\|') + '"'))[1];
+  assert.equal(depth('t|r|/kylie|0'), '0');
+  assert.equal(depth('t|p|invoice|0'), '0');
+  assert.equal(depth('t|r|/pr-7|0'), '1');
   v.provider.setExpansion('expand');
-  assert.equal(pad('t|s|/pr-7|vsmaster|0'), '32');
-  assert.equal(pad('t|s|/kylie|vsmaster|0'), '18');
+  assert.equal(depth('t|s|/pr-7|vsmaster|0'), '2');
+  assert.equal(depth('t|s|/kylie|vsmaster|0'), '1');
   v.provider.setExpansion('collapse');
 
   const click = (act) => v.events.click({ target: { closest: (s) => s === '.row' ? { dataset: { act } } : null } });
@@ -177,4 +177,6 @@ test('a narrow row truncates labels before markers and keeps names, controls and
   }
   for (const marker of ['.pr-conflicts', '.agent']) assert.ok(shrink(marker) >= 1e6 * shrink('.prst'), marker);
   assert.ok(shrink('.dim') >= 1e6 * shrink('.name'));
+  assert.match(css, /\.row \{[^}]*padding-left: calc\(4px \+ var\(--depth\) \* 14px\)/);
+  assert.match(css, /@media \(max-width: 560px\) \{\s*\.row \{ padding-left: calc\(4px \+ var\(--depth\) \* 1ch\); \}/);
 });

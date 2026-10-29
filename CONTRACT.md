@@ -52,8 +52,9 @@ A row that does not fit truncates its parts with an ellipsis in this order:
 the branch or CI label, the origin and custom labels, the conflicts and agent
 markers, then the task status marker or a file name. Section and worktree
 names, up to half the row, `↓N`, the Claude, Codex and screenshot controls,
-and the number columns keep their full width. Below 560 px the number
-columns become narrower and stay aligned across rows.
+and the number columns keep their full width. Below 560 px each indent level
+is one character wide, and the number columns become narrower and stay
+aligned across rows.
 
 ## File groups
 

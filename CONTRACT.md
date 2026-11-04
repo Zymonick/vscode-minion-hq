@@ -253,6 +253,16 @@ back the Claude sessions of its terminals at its next start:
 - The `Minion HQ` output channel logs each change of the record and, at
   activation, each session resumed or not resumed with the reason.
 
+## Background Claude sessions
+
+`claude --bg`, as `/fork-pr` runs it, starts a Claude session without a
+terminal. The agent scan opens each such session that starts in a workspace
+folder after the window activates in a new focused terminal, which runs
+`claude attach <job id>` in the session's folder. Each session opens once per
+window; a session that started earlier, or whose process start time does not
+match its record, stays detached. The `Minion HQ` output channel logs each
+opened session.
+
 ## Codex per PR
 
 Every PR row also carries one small Codex terminal icon with a Codex tooltip,

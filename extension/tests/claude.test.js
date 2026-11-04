@@ -61,14 +61,14 @@ function fixture(t) {
     workspace: { workspaceFolders: [{ uri: { fsPath: workspace } }], getConfiguration: () => ({ get: () => '' }) },
   };
   const env = { ...process.env, HOME: home, PATH: bin };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, nextRestoreRecord, restoreClaudeSessions, claudeSessionWatch });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, nextRestoreRecord, restoreClaudeSessions, claudeSessionWatch, attachBackgroundSessions });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout, setInterval, clearInterval,
     process: Object.assign(Object.create(process), { env }),
     require: (name) => name === 'vscode' ? vscode : require(name),
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
-  return { ...api, provider, repo, workspace, claude, env, session, live, terminal,
+  return { ...api, provider, repo, workspace, claude, env, sessions, session, live, terminal,
     terminals: vscode.window.terminals, created, shown, infos, errors, logged,
     click: () => provider.onMessage({ type: 'claude', repoPath: repo }) };
 }
@@ -279,4 +279,23 @@ test('a terminal that opens or starts a command is scanned each second for 15 se
   watch.dispose();
   t.mock.timers.tick(5000);
   assert.equal(scans, 19);
+});
+
+test('a new background session of the workspace opens once in a focused attach terminal', (t) => {
+  const f = fixture(t);
+  const record = (pid, fields) => fs.writeFileSync(path.join(f.sessions, pid + '.json'), JSON.stringify({
+    pid, procStart: procStart(process.pid), entrypoint: 'cli', cwd: f.workspace, startedAt: 2000, ...fields }));
+  record(process.pid, { kind: 'bg', sessionId: '3fc61690-94a5-4734-aecc-85db7e5b042d', jobId: '3fc61690' });
+  record(1, { kind: 'bg', sessionId: 'aaaaaaaa-0000-4000-8000-000000000000' }); // another process start
+  record(process.ppid, { kind: 'interactive', sessionId: 'bbbbbbbb-0000-4000-8000-000000000000' });
+  const attached = new Set();
+  f.attachBackgroundSessions(attached, 3000);
+  assert.deepEqual(f.created, [], 'a session started before the window activated stays detached');
+  f.attachBackgroundSessions(attached, 1000);
+  f.attachBackgroundSessions(attached, 1000);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [
+    { cwd: f.workspace, shellPath: f.claude, shellArgs: ['attach', '3fc61690'] },
+  ]);
+  assert.deepEqual(f.shown, ['claude']);
+  assert.deepEqual(f.logged, [`claude attach: opened 3fc61690 in ${f.workspace}`]);
 });

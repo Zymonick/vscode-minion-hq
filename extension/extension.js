@@ -2090,6 +2090,32 @@ function restoreClaudeSessions(recorded) {
   }
 }
 
+// ── Background Claude sessions ──────────────────────────────────────────────
+// `claude --bg` (/fork-pr) starts a session without a terminal. Each one that
+// starts in a workspace folder after the window activates opens once, in a new
+// focused terminal that runs `claude attach <job id>` in the session's folder.
+function attachBackgroundSessions(attached, since) {
+  const dir = path.join(process.env.HOME || '', '.claude', 'sessions');
+  const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    let meta;
+    try {
+      meta = JSON.parse(fs.readFileSync(path.join(dir, name)));
+      if (meta.kind !== 'bg' || attached.has(meta.sessionId) || !(meta.startedAt >= since)) continue;
+      if (!folders.some((f) => meta.cwd === f || meta.cwd.startsWith(f + path.sep))) continue;
+      if (procStat(meta.pid).start !== String(meta.procStart)) continue;
+    } catch { continue; /* not a session record, or its process has exited */ }
+    const claude = agentExecutable('claude');
+    if (!claude) return log('claude attach: the claude CLI is not on PATH or in ~/.local/bin');
+    attached.add(meta.sessionId);
+    const job = meta.jobId || meta.sessionId.slice(0, 8);
+    vscode.window.createTerminal({ cwd: meta.cwd, shellPath: claude, shellArgs: ['attach', job] }).show();
+    log(`claude attach: opened ${job} in ${meta.cwd}`);
+  }
+}
+
 // Claude writes its session record a few seconds after it starts, and the next
 // poll may come after the window closes. While a terminal may be starting
 // claude, the record scan runs each second: start() begins or extends a watch
@@ -2635,6 +2661,7 @@ function activate(context) {
   }));
 
   restoreClaudeSessions(context.workspaceState.get(RESTORE_KEY, []));
+  const attached = new Set(), activated = Date.now();
   const absent = new Map();
   let recording = false;
   const recordClaudeSessions = async () => {
@@ -2661,6 +2688,7 @@ function activate(context) {
       provider.push();
     }
     recordClaudeSessions();
+    attachBackgroundSessions(attached, activated);
   }, 7000);
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
   // A terminal that opens, or a command that starts in one, may be claude.

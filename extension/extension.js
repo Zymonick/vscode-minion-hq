@@ -2116,6 +2116,76 @@ function attachBackgroundSessions(attached, since) {
   }
 }
 
+// ── User-run CI requests ────────────────────────────────────────────────────
+// `ci land` and `ci remove` run only in a terminal that no agent started. The
+// kylie-pr mod's /land and /remove write `<verb>-<ms>.json` with the verb's
+// words to USER_RUN_REQUESTS. The agent scan of the window with the Kylie
+// checkout takes each request; any process can write one, so the verb runs
+// only after Simon approves it in a modal dialog. The output goes to
+// `<base>.log` and the exit code to `<base>.rc`, which the mod shows.
+const KYLIE = '/home/azrael/kylie';
+const USER_RUN_DIR = '/tmp/kylie-pr';
+const USER_RUN_MAX_AGE_MS = 60000;
+const USER_RUN_WORD = {
+  land: /^(?:--force|--notest|all|(?:pr-)?\d+|[a-z0-9]+(?:-[a-z0-9]+){2})$/,
+  remove: /^(?:--force|(?:pr-)?\d+)$/,
+};
+
+// The request in file `name` with content `text`, or null when it is not one.
+function userRunRequest(name, text, dir = USER_RUN_DIR) {
+  const m = /^(land|remove)-(\d+)\.json$/.exec(name);
+  if (!m) return null;
+  let words;
+  try { words = JSON.parse(text).words; } catch { return null; }
+  if (!Array.isArray(words) || !words.length) return null;
+  if (!words.every((w) => typeof w === 'string' && USER_RUN_WORD[m[1]].test(w))) return null;
+  return { verb: m[1], words, base: path.join(dir, `${m[1]}-${m[2]}`) };
+}
+
+// The terminal's bash line; the words are validated, so none needs quoting.
+function userRunLine({ verb, words, base }, kylie = KYLIE) {
+  return `${kylie}/scripts/ci ${verb} ${words.join(' ')} 2>&1 | tee ${base}.log` +
+    ` && echo 0 > ${base}.rc || echo $? > ${base}.rc`;
+}
+
+// A request is taken by deleting it, so only one window asks; an old request
+// (its /land has given up) is deleted without a dialog.
+function takeUserRunRequests(dir = USER_RUN_DIR, kylie = KYLIE, now = Date.now()) {
+  if (!(vscode.workspace.workspaceFolders || []).some((f) => f.uri.fsPath === kylie)) return;
+  const requests = path.join(dir, 'requests');
+  let names;
+  try { names = fs.readdirSync(requests); } catch { return; }
+  for (const name of names) {
+    const file = path.join(requests, name);
+    let text, age;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+      age = now - fs.statSync(file).mtimeMs;
+      fs.unlinkSync(file);
+    } catch { continue; /* another window took it */ }
+    const request = userRunRequest(name, text, dir);
+    if (!request) log(`user run: deleted ${name}, not a land or remove request`);
+    else if (age > USER_RUN_MAX_AGE_MS) log(`user run: deleted ${name}, older than ${USER_RUN_MAX_AGE_MS / 1000} s`);
+    else void runUserRequest(request, kylie);
+  }
+}
+
+async function runUserRequest(request, kylie = KYLIE) {
+  const command = `ci ${request.verb} ${request.words.join(' ')}`;
+  const button = request.verb === 'land' ? 'Land' : 'Remove';
+  const choice = await vscode.window.showWarningMessage(`Run ${command}?`, { modal: true }, button);
+  if (choice !== button) {
+    try {
+      fs.writeFileSync(request.base + '.log', `${command}: not approved in VS Code\n`);
+      fs.writeFileSync(request.base + '.rc', '130\n');
+    } catch (error) { log(`user run: ${error.message}`); }
+    return log(`user run: ${command} not approved`);
+  }
+  vscode.window.createTerminal({ name: command, cwd: kylie, shellPath: '/bin/bash',
+    shellArgs: ['-o', 'pipefail', '-lc', userRunLine(request, kylie)] });
+  log(`user run: started ${command}`);
+}
+
 // Claude writes its session record a few seconds after it starts, and the next
 // poll may come after the window closes. While a terminal may be starting
 // claude, the record scan runs each second: start() begins or extends a watch
@@ -2689,6 +2759,7 @@ function activate(context) {
     }
     recordClaudeSessions();
     attachBackgroundSessions(attached, activated);
+    takeUserRunRequests();
   }, 7000);
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
   // A terminal that opens, or a command that starts in one, may be claude.

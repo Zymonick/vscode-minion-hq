@@ -263,6 +263,22 @@ window; a session that started earlier, or whose process start time does not
 match its record, stays detached. The `Minion HQ` output channel logs each
 opened session.
 
+## User-run CI requests
+
+`ci land` and `ci remove` run only in a terminal that no agent started. The
+kylie-pr mod's `/land` and `/remove` write `/tmp/kylie-pr/requests/<verb>-<ms>.json`
+with the verb's words. The agent scan of a window with the workspace folder
+`/home/azrael/kylie` takes each request by deleting it, so only one window
+acts on it. Any process can write a request, so a request never runs without
+Simon's approval:
+
+- A request with another verb, a word outside the verb's documented target and
+  flag forms, or an age over 60 s is deleted and logged; nothing runs.
+- A modal dialog asks `Run ci <verb> <words>?`. Approval opens an unfocused
+  terminal in the Kylie checkout that runs the verb, writes its output to
+  `/tmp/kylie-pr/<verb>-<ms>.log` and its exit code to `<verb>-<ms>.rc`.
+- A refused dialog runs nothing and writes exit code 130 with one log line.
+
 ## Codex per PR
 
 Every PR row also carries one small Codex terminal icon with a Codex tooltip,

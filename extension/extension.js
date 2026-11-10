@@ -2120,9 +2120,12 @@ function attachBackgroundSessions(attached, since) {
 // `ci land` and `ci remove` run only in a terminal that no agent started. The
 // kylie-pr mod's /land and /remove write `<verb>-<ms>.json` with the verb's
 // words to USER_RUN_REQUESTS. The agent scan of the window with the Kylie
-// checkout takes each request; any process can write one, so the verb runs
-// only after Simon approves it in a modal dialog. The output goes to
-// `<base>.log` and the exit code to `<base>.rc`, which the mod shows.
+// checkout takes each request. `land` runs at once, as /land did through a
+// PowerShell window before Windows interop was turned off: the Kylie agent
+// guard refuses every agent call that names the request folder. `remove`
+// deletes a PR, so it runs only after Simon approves it in a modal dialog.
+// The output goes to `<base>.log` and the exit code to `<base>.rc`, which the
+// mod shows.
 const KYLIE = '/home/azrael/kylie';
 const USER_RUN_DIR = '/tmp/kylie-pr';
 const USER_RUN_MAX_AGE_MS = 60000;
@@ -2172,9 +2175,8 @@ function takeUserRunRequests(dir = USER_RUN_DIR, kylie = KYLIE, now = Date.now()
 
 async function runUserRequest(request, kylie = KYLIE) {
   const command = `ci ${request.verb} ${request.words.join(' ')}`;
-  const button = request.verb === 'land' ? 'Land' : 'Remove';
-  const choice = await vscode.window.showWarningMessage(`Run ${command}?`, { modal: true }, button);
-  if (choice !== button) {
+  if (request.verb === 'remove' &&
+      await vscode.window.showWarningMessage(`Run ${command}?`, { modal: true }, 'Remove') !== 'Remove') {
     try {
       fs.writeFileSync(request.base + '.log', `${command}: not approved in VS Code\n`);
       fs.writeFileSync(request.base + '.rc', '130\n');

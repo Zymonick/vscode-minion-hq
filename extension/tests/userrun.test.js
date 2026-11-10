@@ -50,11 +50,11 @@ function fixture(t, { folders, answer } = {}) {
   return { ...api, root, kylie, requests, created, asked, logged, request, take };
 }
 
-test('an approved request runs its verb in an unfocused terminal of the Kylie checkout', async (t) => {
-  const f = fixture(t, { answer: 'Land' });
+test('a land request runs at once in an unfocused terminal of the Kylie checkout', async (t) => {
+  const f = fixture(t);
   f.request('land-1700.json', { words: ['1260', '--notest'] });
   await f.take();
-  assert.deepEqual(f.asked, [{ message: 'Run ci land 1260 --notest?', modal: true, buttons: ['Land'] }]);
+  assert.deepEqual(f.asked, [], 'land asks nothing');
   const base = path.join(f.root, 'land-1700');
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{
     name: 'ci land 1260 --notest', cwd: f.kylie, shellPath: '/bin/bash',
@@ -63,11 +63,19 @@ test('an approved request runs its verb in an unfocused terminal of the Kylie ch
   }]);
   assert.deepEqual(fs.readdirSync(f.requests), [], 'the window takes the request by deleting it');
   await f.take();
-  assert.equal(f.asked.length, 1, 'a taken request never asks twice');
+  assert.equal(f.created.length, 1, 'a taken request never runs twice');
   assert.deepEqual(f.logged, ['user run: started ci land 1260 --notest']);
 });
 
-test('a refused dialog runs nothing and ends the request with exit 130', async (t) => {
+test('a remove request runs after approval in a modal dialog', async (t) => {
+  const f = fixture(t, { answer: 'Remove' });
+  f.request('remove-1750.json', { words: ['791'] });
+  await f.take();
+  assert.deepEqual(f.asked, [{ message: 'Run ci remove 791?', modal: true, buttons: ['Remove'] }]);
+  assert.deepEqual(f.created.map((c) => c.name), ['ci remove 791']);
+});
+
+test('a refused remove dialog runs nothing and ends the request with exit 130', async (t) => {
   const f = fixture(t, { answer: undefined });
   f.request('remove-1800.json', { words: ['791', '--force'] });
   await f.take();

@@ -269,12 +269,14 @@ opened session.
 kylie-pr mod's `/land` and `/remove` write `/tmp/kylie-pr/requests/<verb>-<ms>.json`
 with the verb's words. The agent scan of a window with the workspace folder
 `/home/azrael/kylie` takes each request by deleting it, so only one window
-acts on it. Any process can write a request, so a request never runs without
-Simon's approval:
+acts on it. Any process can write a request; the Kylie agent guard refuses
+every agent tool call that names the request folder, as it refused agent
+commands that named `ci land` when `/land` opened a PowerShell window:
 
 - A request with another verb, a word outside the verb's documented target and
   flag forms, or an age over 60 s is deleted and logged; nothing runs.
-- A modal dialog asks `Run ci <verb> <words>?`. Approval opens an unfocused
+- A `land` request runs at once. A `remove` request deletes a PR, so a modal
+  dialog first asks `Run ci remove <words>?`. The run opens an unfocused
   terminal in the Kylie checkout that runs the verb, writes its output to
   `/tmp/kylie-pr/<verb>-<ms>.log` and its exit code to `<verb>-<ms>.rc`.
 - A refused dialog runs nothing and writes exit code 130 with one log line.

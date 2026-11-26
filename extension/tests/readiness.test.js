@@ -309,7 +309,7 @@ test('open-PR conflicts render after the custom label and a malformed list is un
       staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
     }] } });
     if (conflicts && conflicts.length) {
-      assert.match(root.innerHTML, /\[waiting\]<\/span><span class="pr-conflicts" title="Text conflict with open PRs">conflicts 802, 805<\/span><span class="prst/);
+      assert.match(root.innerHTML, /\[waiting\]<\/span><span class="pr-conflicts" title="Text conflict with open PRs"><span class="long">conflicts <\/span><span class="short">c<\/span>802, 805<\/span><span class="prst/);
     } else {
       assert.doesNotMatch(root.innerHTML, /pr-conflicts"/);
     }

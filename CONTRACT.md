@@ -58,8 +58,9 @@ width.
 
 Below 560 px each indent level is one character wide, and the gaps between
 the parts of a row are narrower. PR rows show their number without `pr-`, also
-in the origin marker, and `ready to land` as `land`. PR rows hide the Codex and
-screenshot controls. The number columns drop the `est` and `cx` words, become
+in the origin marker, `ready to land` as `land`, and `conflicts 471` as
+`c471`. The conflicts marker then gives way after the task status marker.
+PR rows hide the Codex and screenshot controls. The number columns drop the `est` and `cx` words, become
 narrower and stay aligned across rows; an estimate without a measured `cx`
 keeps an empty `cx` column.
 
@@ -332,12 +333,28 @@ Claude sessions at their tab places:
 
 The `Terminals` view below Minion HQ lists every terminal of the window, also
 plain shells, in the order VS Code gives extensions: the order in which the
-terminals opened. Each row shows the terminal's live name with a terminal icon.
-A click shows the terminal and gives it focus. While the view is visible, the
-row of the active terminal is selected without focus; a hidden view never opens
+terminals opened. Each row shows the terminal's live name, or the name of its
+process when the name is empty, and as description the folder its process runs
+in, read from `/proc`. A name that starts with a busy glyph (`◐`–`◓` or a
+Braille spinner) gets a spinning icon, other rows a terminal icon. A click
+shows the terminal and gives it focus. While the view is visible, the row of
+the active terminal is selected without focus; a hidden view never opens
 itself. VS Code reports no name change to extensions, so a visible view
-compares the names each second and redraws only renamed rows; a hidden view
-runs no timer. Minion HQ contributes the default `false` for
+compares each row's name, folder and icon each second and redraws only changed
+rows; a hidden view runs no timer.
+
+Rows replace the tab list's own controls. Hover shows Split and Kill. The
+context menu holds Split, Change Color, Change Icon, Rename, Toggle Size to
+Content Width, Move into Editor Area, Move into New Window, Unsplit and Kill.
+In the focused view, F2 renames and Delete kills. Kill applies to every
+selected row when the clicked row is selected; another action applies to the
+clicked row. VS Code runs these actions on the active terminal, so the row's
+terminal is shown first, and the action runs only after it became active,
+within one second. The API gives no reorder, split-group, colour or icon of a
+terminal, so the view cannot drag rows, show split groups, or show a colour or
+icon that Change Color or Change Icon set.
+
+Minion HQ contributes the default `false` for
 `terminal.integrated.tabs.enabled`, so the terminal panel hides its own tab
 list from the same start that shows the view, and the terminal gets its width;
 a user or Machine setting overrides it. VS Code's `Terminal: Focus Next

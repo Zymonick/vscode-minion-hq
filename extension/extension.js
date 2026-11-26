@@ -1407,9 +1407,10 @@ function getHtml(nonce) {
     .st { width: 1em; }
     .add, .del { width: 3em; }
     /* Short forms give the label room: no pr- prefix, est or cx word, Codex or
-       screenshot control, and narrow gaps. */
-    .pfx, .cxl, .codex, .shots, .prst .long { display: none; }
-    .prst .short { display: inline; }
+       screenshot control, short status and conflicts words, and narrow gaps. */
+    .pfx, .cxl, .codex, .shots, .long { display: none; }
+    .short { display: inline; }
+    .pr-conflicts { flex-shrink: 1e-3; }
     .dim, .prst, .pr-origin, .pr-custom-label, .pr-conflicts, .behind-n { margin-left: 3px; }
     .claude, .agent { margin-left: 4px; }
     .spacer { min-width: 4px; }
@@ -1465,7 +1466,8 @@ function prTag(pr, ci, repoPath) {
     ? '<span class="pr-custom-label" title="Custom label: ' + esc(pr.customLabel) + '">[' + esc(pr.customLabel) + ']</span>'
     : '';
   const conflicts = pr.status !== 'landed' && pr.conflicts && pr.conflicts.length
-    ? '<span class="pr-conflicts" title="Text conflict with open PRs">conflicts ' + esc(pr.conflicts.join(', ')) + '</span>'
+    ? '<span class="pr-conflicts" title="Text conflict with open PRs"><span class="long">conflicts </span><span class="short">c</span>'
+      + esc(pr.conflicts.join(', ')) + '</span>'
     : '';
   const label = pr.statusLabel || pr.status.replace(/-/g, ' ');
   const short = PR_STATUS_SHORT[label];
@@ -2960,15 +2962,30 @@ class StatsViewProvider {
 
 // The window's terminals below Minion HQ, in the order they opened, so the
 // terminal panel can hide its own tab list. A click shows the terminal, and the
-// active terminal stays selected. VS Code reports no title change to
-// extensions, so a visible list compares the names each second.
+// active terminal stays selected. Rows offer the tab list's actions. VS Code
+// reports no title change to extensions, so a visible list compares its rows
+// each second.
 const TERMINAL_NAMES_MS = 1000;
+// A title that starts with a busy glyph, such as Claude's ◐ while it works.
+const TERMINAL_BUSY = /^[◐-◓⠀-⣿]/;
+// The tab list's actions that VS Code runs on the active terminal.
+const TERMINAL_ACTIONS = [
+  ['split', 'workbench.action.terminal.split'],
+  ['changeColor', 'workbench.action.terminal.changeColor'],
+  ['changeIcon', 'workbench.action.terminal.changeIcon'],
+  ['rename', 'workbench.action.terminal.rename'],
+  ['sizeToContentWidth', 'workbench.action.terminal.sizeToContentWidth'],
+  ['moveToEditor', 'workbench.action.terminal.moveToEditor'],
+  ['moveIntoNewWindow', 'workbench.action.terminal.moveIntoNewWindow'],
+  ['unsplit', 'workbench.action.terminal.unsplit'],
+];
 
 class TerminalList {
   constructor() {
     this.emitter = new vscode.EventEmitter();
     this.onDidChangeTreeData = this.emitter.event;
-    this.names = new WeakMap(); // the name each terminal's row shows
+    this.drawn = new WeakMap(); // what each terminal's row shows
+    this.pids = new WeakMap();
     this.ids = new WeakMap();
     this.count = 0;
     this.view = null;
@@ -2983,13 +3000,34 @@ class TerminalList {
     return undefined;
   }
 
+  // A row shows the terminal's name, or its process name when the name is
+  // empty, and the folder its process runs in, like the tab list.
+  look(terminal) {
+    const pid = this.pids.get(terminal);
+    let label = terminal.name, cwd = '';
+    if (pid) {
+      try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
+      if (!label) try { label = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim(); } catch {}
+    }
+    return { label: label || 'terminal', cwd, busy: TERMINAL_BUSY.test(terminal.name) };
+  }
+
   getTreeItem(terminal) {
     if (!this.ids.has(terminal)) this.ids.set(terminal, 'terminal-' + ++this.count);
-    this.names.set(terminal, terminal.name);
-    const item = new vscode.TreeItem(terminal.name);
+    if (!this.pids.has(terminal)) {
+      this.pids.set(terminal, 0);
+      Promise.resolve(terminal.processId).then((pid) => {
+        this.pids.set(terminal, pid || 0);
+        if (pid && vscode.window.terminals.includes(terminal)) this.emitter.fire([terminal]);
+      }, () => {});
+    }
+    const look = this.look(terminal);
+    this.drawn.set(terminal, JSON.stringify(look));
+    const item = new vscode.TreeItem(look.label);
     item.id = this.ids.get(terminal);
-    item.iconPath = new vscode.ThemeIcon('terminal');
-    item.tooltip = terminal.name;
+    item.description = look.cwd && path.basename(look.cwd);
+    item.iconPath = new vscode.ThemeIcon(look.busy ? 'loading~spin' : 'terminal');
+    item.tooltip = [look.label, look.cwd].filter(Boolean).join('\n');
     item.command = { command: 'scmDiffStats.showTerminal', title: 'Show Terminal', arguments: [terminal] };
     return item;
   }
@@ -2999,8 +3037,8 @@ class TerminalList {
   }
 
   compareNames() {
-    const renamed = vscode.window.terminals.filter((t) => this.names.has(t) && this.names.get(t) !== t.name);
-    if (renamed.length) this.emitter.fire(renamed);
+    const changed = vscode.window.terminals.filter((t) => this.drawn.has(t) && this.drawn.get(t) !== JSON.stringify(this.look(t)));
+    if (changed.length) this.emitter.fire(changed);
   }
 
   selectActive() {
@@ -3009,7 +3047,32 @@ class TerminalList {
     Promise.resolve(this.view.reveal(active, { select: true, focus: false })).catch(() => {});
   }
 
-  // Only a visible list compares names and follows the active terminal.
+  // The rows an action applies to: the selection that holds the clicked row,
+  // the clicked row, or, from a key, the selection.
+  targets(terminal, selected) {
+    if (Array.isArray(selected) && selected.includes(terminal)) return [...selected];
+    if (terminal) return [terminal];
+    return this.view ? [...this.view.selection] : [];
+  }
+
+  // Run a tab list action on a row's terminal: VS Code runs it on the active
+  // terminal, so the row's terminal is shown first. If it does not become
+  // active within a second, nothing runs, so no other terminal gets the action.
+  async run(terminal, command) {
+    if (!terminal) return;
+    if (vscode.window.activeTerminal !== terminal) {
+      const active = new Promise((resolve) => {
+        const done = () => { clearTimeout(timer); listener.dispose(); resolve(); };
+        const listener = vscode.window.onDidChangeActiveTerminal((t) => { if (t === terminal) done(); });
+        const timer = setTimeout(done, 1000);
+      });
+      terminal.show();
+      await active;
+    }
+    if (vscode.window.activeTerminal === terminal) await vscode.commands.executeCommand(command);
+  }
+
+  // Only a visible list compares rows and follows the active terminal.
   watch(view) {
     this.view = view;
     const visibility = () => {
@@ -3023,13 +3086,22 @@ class TerminalList {
     visibility();
     return [view.onDidChangeVisibility(visibility), { dispose: () => clearInterval(this.timer) }];
   }
+
+  commands() {
+    return [
+      vscode.commands.registerCommand('scmDiffStats.showTerminal', (terminal) => terminal && terminal.show()),
+      vscode.commands.registerCommand('scmDiffStats.terminal.kill',
+        (terminal, selected) => this.targets(terminal, selected).forEach((t) => t.dispose())),
+      ...TERMINAL_ACTIONS.map(([name, command]) => vscode.commands.registerCommand('scmDiffStats.terminal.' + name,
+        (terminal, selected) => this.run(this.targets(terminal, selected)[0], command))),
+    ];
+  }
 }
 
 function activate(context) {
   const terminalList = new TerminalList();
-  const terminalView = vscode.window.createTreeView('scmDiffStatsTerminals', { treeDataProvider: terminalList });
-  context.subscriptions.push(terminalView, ...terminalList.watch(terminalView),
-    vscode.commands.registerCommand('scmDiffStats.showTerminal', (terminal) => terminal && terminal.show()),
+  const terminalView = vscode.window.createTreeView('scmDiffStatsTerminals', { treeDataProvider: terminalList, canSelectMany: true });
+  context.subscriptions.push(terminalView, ...terminalList.watch(terminalView), ...terminalList.commands(),
     vscode.window.onDidOpenTerminal(() => terminalList.refresh()),
     vscode.window.onDidCloseTerminal(() => terminalList.refresh()),
     vscode.window.onDidChangeActiveTerminal(() => terminalList.selectActive()));

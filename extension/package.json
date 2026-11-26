@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.69",
+  "version": "0.13.70",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -59,6 +59,44 @@
         "title": "Show Terminal"
       },
       {
+        "command": "scmDiffStats.terminal.split",
+        "title": "Split Terminal",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "scmDiffStats.terminal.changeColor",
+        "title": "Change Color..."
+      },
+      {
+        "command": "scmDiffStats.terminal.changeIcon",
+        "title": "Change Icon..."
+      },
+      {
+        "command": "scmDiffStats.terminal.rename",
+        "title": "Rename..."
+      },
+      {
+        "command": "scmDiffStats.terminal.sizeToContentWidth",
+        "title": "Toggle Size to Content Width"
+      },
+      {
+        "command": "scmDiffStats.terminal.moveToEditor",
+        "title": "Move into Editor Area"
+      },
+      {
+        "command": "scmDiffStats.terminal.moveIntoNewWindow",
+        "title": "Move into New Window"
+      },
+      {
+        "command": "scmDiffStats.terminal.unsplit",
+        "title": "Unsplit Terminal"
+      },
+      {
+        "command": "scmDiffStats.terminal.kill",
+        "title": "Kill Terminal",
+        "icon": "$(trash)"
+      },
+      {
         "command": "scmDiffStats.refresh",
         "title": "Refresh Minion HQ",
         "icon": "$(refresh)"
@@ -72,6 +110,42 @@
         },
         {
           "command": "scmDiffStats.showTerminal",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.split",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.changeColor",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.changeIcon",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.rename",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.sizeToContentWidth",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.moveToEditor",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.moveIntoNewWindow",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.unsplit",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.terminal.kill",
           "when": "false"
         }
       ],
@@ -96,8 +170,78 @@
           "when": "view == scmDiffStats",
           "group": "navigation"
         }
+      ],
+      "view/item/context": [
+        {
+          "command": "scmDiffStats.terminal.split",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "inline@1"
+        },
+        {
+          "command": "scmDiffStats.terminal.kill",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "inline@2"
+        },
+        {
+          "command": "scmDiffStats.terminal.split",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "1_create@1"
+        },
+        {
+          "command": "scmDiffStats.terminal.changeColor",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "3_edit@1"
+        },
+        {
+          "command": "scmDiffStats.terminal.changeIcon",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "3_edit@2"
+        },
+        {
+          "command": "scmDiffStats.terminal.rename",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "3_edit@3"
+        },
+        {
+          "command": "scmDiffStats.terminal.sizeToContentWidth",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "3_edit@4"
+        },
+        {
+          "command": "scmDiffStats.terminal.moveToEditor",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "4_move@1"
+        },
+        {
+          "command": "scmDiffStats.terminal.moveIntoNewWindow",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "4_move@2"
+        },
+        {
+          "command": "scmDiffStats.terminal.unsplit",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "5_split@1"
+        },
+        {
+          "command": "scmDiffStats.terminal.kill",
+          "when": "view == scmDiffStatsTerminals",
+          "group": "7_kill@1"
+        }
       ]
     },
+    "keybindings": [
+      {
+        "command": "scmDiffStats.terminal.rename",
+        "key": "f2",
+        "when": "focusedView == scmDiffStatsTerminals"
+      },
+      {
+        "command": "scmDiffStats.terminal.kill",
+        "key": "delete",
+        "mac": "cmd+backspace",
+        "when": "focusedView == scmDiffStatsTerminals"
+      }
+    ],
     "configurationDefaults": {
       "terminal.integrated.tabs.enabled": false
     },

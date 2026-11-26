@@ -171,8 +171,9 @@ test('a narrow row truncates markers before the worktree label and keeps names, 
     require: (name) => name === 'vscode' ? { window: { createOutputChannel: () => ({}) } } : require(name),
   });
   const css = getHtml('test').match(/<style>([\s\S]*?)<\/style>/)[1];
-  const shrink = (cls) => {
-    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  const wide = css.slice(0, css.indexOf('@media (max-width: 560px)'));
+  const shrink = (cls, sheet = wide) => {
+    const rules = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .filter(([, sel]) => sel.split(',').some((s) => s.trim() === cls));
     let value = '1';
     for (const [, , body] of rules) {
@@ -196,6 +197,8 @@ test('a narrow row truncates markers before the worktree label and keeps names, 
   assert.doesNotMatch(css.slice(0, css.indexOf('@media')), /\.pfx/);
   const narrow = css.slice(css.indexOf('@media (max-width: 560px)'));
   assert.match(narrow, /^@media \(max-width: 560px\) \{\s*\.row \{ padding-left: calc\(4px \+ var\(--depth\) \* 1ch\); \}/);
-  assert.match(narrow, /\.pfx, \.cxl, \.codex, \.shots, \.prst \.long \{ display: none; \}/);
-  assert.match(narrow, /\.prst \.short \{ display: inline; \}/);
+  assert.match(narrow, /\.pfx, \.cxl, \.codex, \.shots, \.long \{ display: none; \}/);
+  assert.match(narrow, /\n    \.short \{ display: inline; \}/);
+  assert.ok(shrink('.prst', css) >= 1e3 * shrink('.pr-conflicts', css));
+  assert.ok(shrink('.pr-conflicts', css) >= 1e3 * shrink('.hdr .dim', css));
 });

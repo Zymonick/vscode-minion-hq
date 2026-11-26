@@ -227,8 +227,9 @@ changes do not open duplicate terminals:
   attaches it to the PR.
 
 `claude` is the terminal's process, not a command typed into a shell. Minion HQ
-sends no prompt other than the `continue` of a click-resumed session, and
-starts no CI run or agent work by itself. Clicking the
+sends no prompt other than the `continue` of a click-resumed session or of a
+restored session whose last turn did not finish, and starts no CI run or
+agent work by itself. Clicking the
 control never toggles the row. Look a PR's session up on click, never during
 refresh, polling, or agent scans.
 
@@ -282,7 +283,14 @@ Claude sessions at their tab places:
   A session in whose folder a terminal of the window waits stays with that
   terminal. In record order, each other session in a tmux session that no
   client shows gets a new terminal that attaches to it. A session that no longer runs resumes
-  with `claude --resume <id>` in its folder. A session that runs elsewhere, or
+  with `claude --resume <id>` in its folder. When its last turn did not
+  finish, `continue` follows the id, so the lost step runs again: the last
+  message of the transcript is a prompt, a tool call or a tool result without
+  Claude's reply. A reply that ends the turn, a question to the user
+  (`AskUserQuestion`, `ExitPlanMode`), an interrupt by the user, a compaction
+  and a local command finish a turn. Claude's own notes, such as «No response
+  requested.» after a resume without a prompt, and subagent and meta entries
+  are no message. A session that runs elsewhere, or
   one without its transcript, does neither. Then each other tmux session of
   the socket that no client shows is attached, in start order. No terminal
   takes focus.

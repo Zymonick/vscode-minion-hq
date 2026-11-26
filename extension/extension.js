@@ -2292,9 +2292,65 @@ function terminalsSettled(quiet = RESTORE_SETTLE_MS, max = RESTORE_SETTLE_MAX_MS
   });
 }
 
+// Claude's tools that wait for the user's answer: a session that ends while
+// one waits has finished its turn.
+const CLAUDE_WAITING_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+const CLAUDE_FINISHED_TEXT = /^\s*(?:\[Request interrupted by user|<command-name>|<local-command-stdout>)/;
+
+// Whether one transcript line is the last message of a turn that did not
+// finish (true), of a finished turn (false), or no message of the conversation
+// (null). Claude's own notes, such as «No response requested.» at a resume
+// without a prompt, are no message.
+function claudeTurnState(line) {
+  let entry;
+  try { entry = JSON.parse(line); } catch { return null; }
+  if (!entry || (entry.type !== 'user' && entry.type !== 'assistant') || entry.isSidechain || entry.isMeta) return null;
+  const message = entry.message || {};
+  if (message.model === '<synthetic>') return null;
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  if (entry.type === 'assistant') {
+    if (message.stop_reason === 'end_turn' || message.stop_reason === 'stop_sequence') return false;
+    const tools = blocks.filter((b) => b && b.type === 'tool_use').map((b) => b.name);
+    return !(tools.length && tools.every((name) => CLAUDE_WAITING_TOOLS.has(name)));
+  }
+  if (entry.isCompactSummary) return false;
+  const texts = typeof message.content === 'string' ? [message.content]
+    : blocks.filter((b) => b && b.type === 'text').map((b) => b.text || '');
+  return !texts.some((text) => CLAUDE_FINISHED_TEXT.test(text));
+}
+
+// Whether the last turn of a Claude transcript did not finish: its process
+// ended while Claude answered, ran a tool or waited for the API. The file is
+// read from its end, in parts that grow until a message of the conversation
+// is found.
+function claudeTurnUnfinished(transcript) {
+  let fd = null;
+  try {
+    fd = fs.openSync(transcript, 'r');
+    const size = fs.fstatSync(fd).size;
+    for (let tail = 1 << 18; ; tail *= 4) {
+      const start = Math.max(0, size - tail);
+      const buffer = Buffer.alloc(size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      const lines = buffer.toString('utf8').split('\n');
+      if (start > 0) lines.shift();
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const state = claudeTurnState(lines[i]);
+        if (state !== null) return state;
+      }
+      if (start === 0) return false;
+    }
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 // In record order, each session in a tmux session that no client shows and no
 // restored terminal holds (marked) is attached, and each session that no longer
-// runs resumes in its folder. Then the other such tmux sessions are attached,
+// runs resumes in its folder, with continue when its last turn did not finish.
+// Then the other such tmux sessions are attached,
 // in start order. No terminal takes focus.
 function restoreClaudeSessions(recorded, tmux, marked = new Set()) {
   const panes = new Map();
@@ -2323,8 +2379,9 @@ function restoreClaudeSessions(recorded, tmux, marked = new Set()) {
       log(`claude restore: ${session.id} not resumed, ${kept}`);
       continue;
     }
-    claudeTerminal(session.cwd, ['--resume', session.id]);
-    log(`claude restore: resumed ${session.id} in ${session.cwd}`);
+    const unfinished = claudeTurnUnfinished(transcript);
+    claudeTerminal(session.cwd, ['--resume', session.id, ...(unfinished ? ['continue'] : [])]);
+    log(`claude restore: resumed ${session.id} in ${session.cwd}${unfinished ? ' with continue, its last turn did not finish' : ''}`);
   }
   const rest = tmux.sessions.filter((s) => !s.attached && !attached.has(s.name) && !marked.has(s.name))
     .sort((a, b) => a.created - b.created);

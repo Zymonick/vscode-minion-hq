@@ -378,6 +378,47 @@ test('recorded sessions are attached in tmux or resume in their folder, in recor
   assert.deepEqual(f.logged, ['claude restore: nothing recorded']);
 });
 
+test('a restored session whose last turn did not finish resumes with continue', (t) => {
+  const f = fixture(t);
+  const user = (content, extra = {}) => ({ type: 'user', message: { role: 'user', content }, ...extra });
+  const assistant = (stop_reason, content, extra = {}) => ({ type: 'assistant',
+    message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason, content }, ...extra });
+  const text = (value) => ({ type: 'text', text: value });
+  const tool = (name) => ({ type: 'tool_use', id: 'toolu_1', name, input: {} });
+  const result = { type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' };
+  const title = { type: 'custom-title', customTitle: 'pr-7 [wip] title' };
+  const transcripts = {
+    'a tool result waits for the reply': [user('go'), assistant('tool_use', [tool('Bash')]), user([result]), title],
+    'a resume without a prompt added its note': [user('go'), assistant('tool_use', [tool('Bash')]), user([result]),
+      { type: 'assistant', message: { model: '<synthetic>', stop_reason: 'stop_sequence', content: [text('No response requested.')] } },
+      { type: 'system', content: 'hook' }],
+    'a tool runs': [user('go'), assistant('tool_use', [text('Running.'), tool('Bash')])],
+    'a prompt waits for the reply': [assistant('end_turn', [text('Done.')]), user('next step')],
+    'a long entry follows the prompt': [user('go'), { type: 'file-history-snapshot', snapshot: 'x'.repeat(300000) }],
+    'the reply ended the turn': [user('go'), assistant('end_turn', [text('Done.')]), title],
+    'a question waits for the user': [user('go'), assistant('tool_use', [tool('AskUserQuestion')])],
+    'the user interrupted': [user('go'), assistant('tool_use', [tool('Bash')]),
+      user([result, text('[Request interrupted by user for tool use]')])],
+    'an idle compaction': [user('summary', { isCompactSummary: true })],
+    'a local command': [user('<local-command-caveat>caveat</local-command-caveat>', { isMeta: true }),
+      user('<command-name>/screenshot</command-name>')],
+    'a subagent wrote last': [assistant('end_turn', [text('Done.')]), user('task', { isSidechain: true })],
+  };
+  const project = path.join(f.env.HOME, '.claude', 'projects', f.workspace.replace(/[^a-zA-Z0-9]/g, '-'));
+  const recorded = Object.entries(transcripts).map(([name, lines], i) => {
+    const id = `${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`;
+    f.session(id, null);
+    fs.writeFileSync(path.join(project, id + '.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    return { id, cwd: f.workspace, name };
+  });
+  f.restoreClaudeSessions(recorded, { sessions: [], clients: [] });
+  const resumed = f.created.map((c) => c.shellArgs[1]);
+  assert.deepEqual(resumed, recorded.map(({ id }, i) => `claude --resume ${id}${i < 5 ? ' continue' : ''}`),
+    recorded.map(({ name }) => name).join('; '));
+  assert.equal(f.logged[0], `claude restore: resumed ${recorded[0].id} in ${f.workspace} with continue, its last turn did not finish`);
+  assert.equal(f.logged[5], `claude restore: resumed ${recorded[5].id} in ${f.workspace}`);
+});
+
 test('the restore waits until no terminal has opened for a while, or until its limit', async (t) => {
   const f = fixture(t);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -2199,30 +2199,35 @@ function claudeInTree(pid, depth = 3) {
   return null;
 }
 
-// The Claude sessions that run in this window's terminals outside tmux.
-async function claudeTerminalSessions() {
+// The Claude sessions that this window's terminals show, in terminal order: the
+// claude tmux session that a terminal attaches, or claude below its process.
+async function claudeTerminalSessions(tmux = NO_TMUX) {
   const sessions = [];
   for (const terminal of vscode.window.terminals) {
     if (terminal.exitStatus) continue;
-    const pid = await terminal.processId;
+    const pane = tmux.sessions.find((s) => s.name === tmuxTerminals.get(terminal));
+    const pid = pane ? pane.pid : await terminal.processId;
     const session = pid && claudeInTree(pid);
     if (session && !sessions.some((s) => s.id === session.id)) sessions.push(session);
   }
   return sessions;
 }
 
-// The host's Claude sessions in tmux in start order, then this window's others.
-async function claudeSessions(tmux) {
+// The host's Claude sessions in tmux in start order, then the others that this
+// window's terminals show.
+function claudeSessions(tmux, shown) {
   const sessions = [];
   const add = (session) => { if (session && !sessions.some((s) => s.id === session.id)) sessions.push(session); };
   [...tmux.sessions].sort((a, b) => a.created - b.created).forEach((s) => add(claudeRecord(s.pid)));
-  (await claudeTerminalSessions()).forEach(add);
+  shown.forEach(add);
   return sessions;
 }
 
 // The record after a scan: the recorded sessions in their order, then new live
 // ones. A recorded session leaves after the grace period without its process.
-function nextRestoreRecord(recorded, live, absent, now) {
+// The sessions that this window's terminals show take their places in the
+// record in terminal order, so the next start opens them in that order.
+function nextRestoreRecord(recorded, live, absent, now, shown = []) {
   const ids = new Set(live.map((s) => s.id));
   for (const id of ids) absent.delete(id);
   const kept = recorded.filter((s) => {
@@ -2234,7 +2239,11 @@ function nextRestoreRecord(recorded, live, absent, now) {
     return false;
   });
   const added = live.filter((s) => !kept.some((k) => k.id === s.id));
-  return [...kept, ...added].map(({ id, cwd }) => ({ id, cwd }));
+  const next = [...kept, ...added].map(({ id, cwd }) => ({ id, cwd }));
+  const order = shown.map((s) => next.find((n) => n.id === s.id)).filter(Boolean);
+  const slots = next.flatMap((s, i) => order.includes(s) ? [i] : []);
+  slots.forEach((slot, k) => { next[slot] = order[k]; });
+  return next;
 }
 
 // In record order, each session in a tmux session that no client shows is
@@ -2936,7 +2945,8 @@ function activate(context) {
       const tmux = await claudeTmux();
       await mapTmuxTerminals(tmux);
       const stored = readRestoreRecord(), recorded = stored || [];
-      const next = nextRestoreRecord(recorded, await claudeSessions(tmux), absent, Date.now());
+      const shown = await claudeTerminalSessions(tmux);
+      const next = nextRestoreRecord(recorded, claudeSessions(tmux, shown), absent, Date.now(), shown);
       if (!stored || JSON.stringify(next) !== JSON.stringify(recorded)) {
         writeRestoreRecord(next);
         log('claude restore: recorded ' + (next.map((s) => s.id).join(', ') || 'no session'));

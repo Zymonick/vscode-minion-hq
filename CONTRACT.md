@@ -250,6 +250,10 @@ Claude sessions:
   generations below it. Each entry keeps the session id and the folder the
   session started in. The id comes from Claude's session record with a
   matching process start time. Entries keep their order; new ones come last.
+  The sessions that the window's terminals show then take their places in the
+  record in terminal order, so the next start opens them in that order. VS
+  Code tells extensions the order in which terminals opened, not a tab moved
+  by hand, so a moved tab returns at its earlier place.
   A window that opens another folder keeps the record. Until a scan writes the
   file, the workspace record of Minion HQ 0.13.59 and earlier stands in.
 - For 15 seconds after a terminal opens or a command starts in a terminal, the

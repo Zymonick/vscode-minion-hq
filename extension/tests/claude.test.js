@@ -252,6 +252,23 @@ test("the Claude sessions of this window's terminals are found below the termina
   assert.deepEqual(Array.from(await f.claudeTerminalSessions()), []);
 });
 
+test("a terminal that attaches a tmux session shows that session's Claude, in terminal order", async (t) => {
+  const f = fixture(t);
+  const [inTmux, own] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const [pane, client, alone] = [f.child(), f.child(), f.child()];
+  f.live(inTmux, pane);
+  f.live(own, alone);
+  f.terminals.push(f.terminal('tmux', client), f.terminal('claude', alone));
+  f.tmuxState([['claude-kylie', 100, 1, pane]], [['claude-kylie', client]]);
+  const tmux = await f.claudeTmux();
+  await f.mapTmuxTerminals(tmux);
+  const ids = async () => JSON.parse(JSON.stringify(await f.claudeTerminalSessions(tmux))).map((s) => s.id);
+  assert.deepEqual(await ids(), [inTmux, own]);
+  f.terminals.reverse();
+  assert.deepEqual(await ids(), [own, inTmux]);
+  assert.deepEqual(f.created, [], 'a client that started after the extension host keeps its terminal');
+});
+
 test('the record keeps its order, adds new sessions last, and drops one after 30 seconds without its process', (t) => {
   const f = fixture(t);
   const ids = (record) => Array.from(record, (s) => s.id);
@@ -269,6 +286,18 @@ test('the record keeps its order, adds new sessions last, and drops one after 30
     [a, b, { id: 'c', cwd: '/w' }]);
 });
 
+test("the sessions that this window's terminals show take their record places in terminal order", (t) => {
+  const f = fixture(t);
+  const ids = (record) => Array.from(record, (s) => s.id);
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((id) => ({ id, cwd: '/w' }));
+  assert.deepEqual(ids(f.nextRestoreRecord([a, b, c], [a, b, c], new Map(), 0, [c, a])), ['c', 'b', 'a'],
+    'a session that another window shows keeps its place');
+  assert.deepEqual(ids(f.nextRestoreRecord([a, b, c], [a, c], new Map(), 0, [c, a])), ['c', 'b', 'a'],
+    'a session without its process keeps its place');
+  assert.deepEqual(ids(f.nextRestoreRecord([a, b], [a, b, d], new Map(), 0, [d, a, b])), ['d', 'a', 'b'],
+    'a new session in an earlier terminal comes before the sessions of later terminals');
+});
+
 test("the host's sessions are the Claude sessions in tmux in start order, then this window's others", async (t) => {
   const f = fixture(t);
   const [early, late, own] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
@@ -281,7 +310,8 @@ test("the host's sessions are the Claude sessions in tmux in start order, then t
   f.tmuxState([['claude-kylie', 200, 1, pane1], ['claude-kylie-2', 100, 0, pane2], ['claude-other', 50, 0, 999999999]]);
   const tmux = await f.claudeTmux();
   assert.deepEqual(JSON.parse(JSON.stringify(tmux.sessions.map((s) => s.name))), ['claude-kylie', 'claude-kylie-2', 'claude-other']);
-  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeSessions(tmux))).map((s) => s.id), [early, late, own]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.claudeSessions(tmux, await f.claudeTerminalSessions(tmux)))).map((s) => s.id),
+    [early, late, own]);
   assert.match(f.tmuxCalls()[0], /^-L claude list-panes -a -F .* ; list-clients -F /);
 
   fs.rmSync(f.tmux);

@@ -515,10 +515,23 @@ function shotsPage(dir, dirUrl, title) {
   return /<\/body>/i.test(page) ? page.replace(/<\/body>/i, () => extra + '</body>') : page + extra;
 }
 
-// Minion HQ editors go to the last editor group. Floating windows follow the
-// main window's groups, so this keeps them out of the main window's layout.
+// Minion HQ editors go to the last editor group, which is in a floating window
+// when the groups outnumber the main window's layout: floating groups follow
+// the main groups, and the click makes the main window the active one. Without
+// a floating window, one opens. The queue lets a second click use that window.
+let editorColumnQueue = Promise.resolve();
 function editorColumn() {
-  return Math.max(vscode.ViewColumn.Active, ...vscode.window.tabGroups.all.map((group) => group.viewColumn));
+  const column = editorColumnQueue.then(async () => {
+    const last = () => Math.max(vscode.ViewColumn.Active, ...vscode.window.tabGroups.all.map((group) => group.viewColumn));
+    const leaves = (groups) => (groups || []).reduce((count, group) => count + (group.groups?.length ? leaves(group.groups) : 1), 0);
+    const layout = await vscode.commands.executeCommand('vscode.getEditorLayout');
+    if (last() <= Math.max(1, leaves(layout?.groups))) {
+      await vscode.commands.executeCommand('workbench.action.newEmptyEditorWindow');
+    }
+    return last();
+  });
+  editorColumnQueue = column.catch(() => {});
+  return column;
 }
 
 // Windows Chrome shows a set in a new window of the profile `ci preview N open`
@@ -2673,7 +2686,7 @@ class StatsViewProvider {
             revisionUri(m.repoPath, f.base, f.path), workingUri(m.repoPath, f.path),
           ]);
           await vscode.commands.executeCommand('vscode.diff', left, right,
-            `${path.basename(f.path)} (migration ${f.base.slice(0, 7)} ↔ working tree)`, { viewColumn: editorColumn() });
+            `${path.basename(f.path)} (migration ${f.base.slice(0, 7)} ↔ working tree)`, { viewColumn: await editorColumn() });
         }
       } catch (error) {
         log('schema: ' + repo.name + ': ' + error.message);
@@ -2703,10 +2716,10 @@ class StatsViewProvider {
             m.mode === 'staged' ? revisionUri(m.repoPath, '', m.path) : workingUri(m.repoPath, m.path),
           ]);
           if (m.mode === 'working' && left.scheme === EMPTY_SCHEME && right.scheme === 'file') {
-            await vscode.commands.executeCommand('vscode.open', right, editorColumn());
+            await vscode.commands.executeCommand('vscode.open', right, await editorColumn());
           } else {
             await vscode.commands.executeCommand('vscode.diff', left, right,
-              `${base} (${m.mode === 'staged' ? 'HEAD ↔ index' : 'index ↔ working tree'})`, { viewColumn: editorColumn() });
+              `${base} (${m.mode === 'staged' ? 'HEAD ↔ index' : 'index ↔ working tree'})`, { viewColumn: await editorColumn() });
           }
         } else if (m.mode === 'vsmaster') {
           const basePath = this.data.get(m.repoPath)?.vsMaster?.renames?.[m.path] || m.path;
@@ -2714,16 +2727,16 @@ class StatsViewProvider {
             revisionUri(m.repoPath, m.mergeBase, basePath), workingUri(m.repoPath, m.path),
           ]);
           await vscode.commands.executeCommand('vscode.diff', left, right, `${base} (master ↔ branch)`,
-            { viewColumn: editorColumn() });
+            { viewColumn: await editorColumn() });
         } else if (m.mode === 'commit') {
           const revisions = (await readGit(m.repoPath, ['rev-list', '--parents', '-n', '1', m.hash])).toString().trim().split(' ');
           const [left, right] = await Promise.all([
             revisionUri(m.repoPath, revisions[1] || null, m.path), revisionUri(m.repoPath, revisions[0], m.path),
           ]);
           await vscode.commands.executeCommand('vscode.diff', left, right, `${base} @ ${m.hash.slice(0, 7)}`,
-            { viewColumn: editorColumn() });
+            { viewColumn: await editorColumn() });
         } else {
-          await vscode.commands.executeCommand('vscode.open', uri, editorColumn());
+          await vscode.commands.executeCommand('vscode.open', uri, await editorColumn());
         }
       } catch (error) {
         log('open: ' + m.repoPath + '/' + m.path + ': ' + error.message);

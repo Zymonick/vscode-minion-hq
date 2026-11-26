@@ -32,6 +32,7 @@ function harness(childProcess = cp) {
   const commands = [], errors = [], infos = [], contents = new Map(), fileSystems = new Map();
   // The main window's group and one floating window group.
   const groups = [{ viewColumn: 1 }, { viewColumn: 2 }];
+  const layout = { orientation: 0, groups: [{}] };
   let provider;
   const disposable = () => ({ dispose() {} });
   const vscode = {
@@ -43,8 +44,12 @@ function harness(childProcess = cp) {
     EventEmitter: class { event() {} fire() {} dispose() {} },
     commands: {
       registerCommand: disposable,
-      // Only editor commands; the loading context key is not an open.
-      executeCommand: async (...args) => { if (args[0] !== 'setContext') commands.push(args); },
+      // Only editor and window commands; the loading context key is not an open.
+      executeCommand: async (...args) => {
+        if (args[0] === 'vscode.getEditorLayout') return layout;
+        if (args[0] === 'workbench.action.newEmptyEditorWindow') groups.push({ viewColumn: groups.length + 1 });
+        if (args[0] !== 'setContext') commands.push(args);
+      },
     },
     window: {
       tabGroups: { all: groups },
@@ -79,10 +84,10 @@ function harness(childProcess = cp) {
     assert.ok(contents.has(uri.scheme), `unregistered scheme: ${uri.scheme}`);
     return Buffer.from(await contents.get(uri.scheme).provideTextDocumentContent(uri));
   }
-  return { provider, commands, errors, infos, read, fileSystems, groups };
+  return { provider, commands, errors, infos, read, fileSystems, groups, layout };
 }
 
-test('files and diffs open in the last editor group, so a floating window keeps the main layout', async (t) => {
+test('files and diffs open in the floating window, so the main layout stays unchanged', async (t) => {
   const { repo } = fixture(t);
   fs.writeFileSync(path.join(repo, 'file.py'), 'working\n');
   fs.writeFileSync(path.join(repo, 'new.py'), 'new\n');
@@ -93,9 +98,31 @@ test('files and diffs open in the last editor group, so a floating window keeps 
   await h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'new.py' });
   assert.equal(h.commands.at(-1)[0], 'vscode.open');
   assert.equal(h.commands.at(-1)[2], 2);
+  assert.equal(h.commands.length, 2, 'an existing floating window is reused');
+  assert.deepEqual(h.errors, []);
+});
+
+test('without a floating window, one opens and later clicks reuse it', async (t) => {
+  const { repo } = fixture(t);
+  fs.writeFileSync(path.join(repo, 'file.py'), 'working\n');
+  fs.writeFileSync(path.join(repo, 'new.py'), 'new\n');
+  const h = harness();
   h.groups.pop();
+  await Promise.all([
+    h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'file.py' }),
+    h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'new.py' }),
+  ]);
+  assert.deepEqual(h.commands.map((c) => c[0]).sort(), ['vscode.diff', 'vscode.open', 'workbench.action.newEmptyEditorWindow']);
+  assert.equal(h.commands[0][0], 'workbench.action.newEmptyEditorWindow', 'the window opens before either editor');
+  assert.equal(h.commands.find((c) => c[0] === 'vscode.diff')[4].viewColumn, 2);
+  assert.equal(h.commands.find((c) => c[0] === 'vscode.open')[2], 2);
+  // Two main groups, one of them split, and no floating window.
+  h.commands.length = 0;
+  h.groups.splice(0, h.groups.length, { viewColumn: 1 }, { viewColumn: 2 }, { viewColumn: 3 });
+  h.layout.groups = [{ groups: [{}, {}] }, {}];
   await h.provider.onMessage({ type: 'open', mode: 'working', repoPath: repo, path: 'file.py' });
-  assert.equal(h.commands.at(-1)[4].viewColumn, 1, 'a single group stays the target');
+  assert.deepEqual(h.commands.map((c) => c[0]), ['workbench.action.newEmptyEditorWindow', 'vscode.diff']);
+  assert.equal(h.commands[1][4].viewColumn, 4);
   assert.deepEqual(h.errors, []);
 });
 

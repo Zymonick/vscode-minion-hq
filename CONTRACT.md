@@ -363,9 +363,11 @@ full size in Chrome. A missing set or Chrome shows an error.
 
 ## Editor placement
 
-Files, diffs, and images open in the last editor group.
-Floating editor windows hold the last groups, so these editors open there and
-leave the main window's layout unchanged.
+Files, diffs, and images open in a floating editor window, in its last group,
+and leave the main window's layout unchanged. Floating windows hold the last
+groups, so the last group is floating when the editor groups outnumber the main
+window's layout. Without a floating window, the click opens one. Clicks wait for
+each other, so a second click uses that window and does not open another.
 
 ## Terminal
 

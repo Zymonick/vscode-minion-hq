@@ -1955,13 +1955,21 @@ function claudeSessionPid(sessionId) {
   return null;
 }
 
-// The window's terminal whose process tree holds pid.
-async function terminalRunning(pid) {
-  const tree = new Set();
+// pid and its ancestors, added to tree.
+function ancestors(pid, tree = new Set()) {
   for (let p = pid; p > 1 && !tree.has(p);) {
     tree.add(p);
     try { p = procStat(p).ppid; } catch { break; }
   }
+  return tree;
+}
+
+// The window's terminal whose process tree holds pid, or a client of the
+// claude tmux session whose pane process is pid.
+async function terminalRunning(pid, tmux = NO_TMUX) {
+  const tree = ancestors(pid);
+  const pane = tmux.sessions.find((s) => s.pid === pid);
+  for (const client of tmux.clients) if (pane && client.name === pane.name) ancestors(client.pid, tree);
   for (const terminal of vscode.window.terminals) {
     if (tree.has(await terminal.processId)) return terminal;
   }
@@ -1981,11 +1989,10 @@ function agentExecutable(command, preferred) {
   return null;
 }
 
-// Focus the PR's Claude terminal; else resume its newest session with the
-// prompt `continue`, or start one in its worktree, where the first prompt
-// attaches it to the PR. Claude is
-// the terminal's process, so no shell activation races its start, and a
-// session already running elsewhere is never resumed a second time.
+// Focus the PR's Claude terminal, or attach its tmux session that no terminal
+// of this window shows; else resume its newest session with the prompt
+// `continue`, or start one in its worktree, where the first prompt attaches it
+// to the PR. A session already running elsewhere is never resumed a second time.
 async function openClaude(repo) {
   const name = 'Claude ' + repo.name;
   const own = vscode.window.terminals.find((t) => {
@@ -1997,30 +2004,126 @@ async function openClaude(repo) {
   const session = claudeSessionForPr(repo.repoPath, repo.pr.serial);
   const pid = session && claudeSessionPid(session.id);
   if (pid) {
-    const running = await terminalRunning(pid);
+    const tmux = await claudeTmux();
+    const running = await terminalRunning(pid, tmux);
     if (running) return running.show();
+    const pane = tmux.sessions.find((s) => s.pid === pid);
+    if (pane) return attachClaudeTmux(pane.name).show();
     vscode.window.showInformationMessage(`The Claude session for ${repo.name} is already running outside this window's terminals (pid ${pid}).`);
     return;
   }
-  const claude = agentExecutable('claude');
-  if (!claude) throw new Error('the claude CLI is not on PATH or in ~/.local/bin');
+  if (!agentExecutable('claude')) throw new Error('the claude CLI is not on PATH or in ~/.local/bin');
   // A fixed VS Code terminal name hides Claude's live title, whose ◐/◑ prefix
   // marks a working session and ✳ one that is idle or waiting for input.
-  vscode.window.createTerminal({
-    cwd: session ? session.cwd : repo.repoPath, env: { MINION_HQ_CLAUDE_PR: repo.repoPath },
-    shellPath: claude, shellArgs: session ? ['--resume', session.id, 'continue'] : [],
-  }).show();
+  claudeTerminal(session ? session.cwd : repo.repoPath, session ? ['--resume', session.id, 'continue'] : [],
+    { MINION_HQ_CLAUDE_PR: repo.repoPath }).show();
 }
 
 // ── Claude session restore ──────────────────────────────────────────────────
-// Quitting VS Code ends the WSL server with every terminal. The agent scan
-// records the Claude sessions of this window's terminals in workspace state,
-// and the next start resumes each one that no longer runs. A session leaves
-// the record only after RESTORE_GRACE_MS without its process: a closing window
-// ends this extension host first, so its sessions stay recorded.
-const RESTORE_KEY = 'claudeTerminalSessions';
+// Over SSH, the shell runs each interactive claude in its own tmux session on
+// the socket `claude` (agent-config shell/claude.sh), so the session outlives
+// the window. Elsewhere, quitting VS Code ends every terminal. The agent scan
+// records the host's Claude sessions in a file, so a window that opens another
+// folder keeps the record. At activation, one window of the host attaches each
+// tmux session that no client shows and resumes each recorded session that no
+// longer runs. A session leaves the record only after RESTORE_GRACE_MS without
+// its process: a closing window ends this extension host first, so its
+// sessions stay recorded.
+const RESTORE_KEY = 'claudeTerminalSessions'; // the workspace record of Minion HQ 0.13.59 and earlier
 const RESTORE_GRACE_MS = 30000;
+const RESTORE_CLAIM_MS = 10000;
 const RESTORE_WATCH_S = 15;
+const NO_TMUX = { sessions: [], clients: [] };
+const tmuxTerminals = new WeakMap(); // terminal → the claude tmux session it shows
+
+const restoreFile = () => path.join(process.env.HOME || '', '.local', 'state', 'minion-hq', 'claude-sessions.json');
+
+function readRestoreRecord() {
+  try {
+    const record = JSON.parse(fs.readFileSync(restoreFile(), 'utf8'));
+    return Array.isArray(record) ? record : null;
+  } catch { return null; }
+}
+
+function writeRestoreRecord(record) {
+  const file = restoreFile(), tmp = `${file}.${process.pid}`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(record) + '\n');
+  fs.renameSync(tmp, file);
+}
+
+// The first window that activates restores. Another one that activates within
+// RESTORE_CLAIM_MS, while the first one's extension host runs, does not.
+function claimRestore(now = Date.now()) {
+  const lock = restoreFile() + '.lock';
+  try {
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    try {
+      const owner = +fs.readFileSync(lock, 'utf8');
+      if (now - fs.statSync(lock).mtimeMs < RESTORE_CLAIM_MS && fs.existsSync(`/proc/${owner}`)) return false;
+    } catch { /* no claim yet */ }
+    fs.writeFileSync(lock, String(process.pid));
+    return true;
+  } catch { return false; }
+}
+
+// The tmux sessions of the socket `claude` with their pane process, and the
+// clients that show them. Without tmux or its server, both lists are empty.
+function claudeTmux() {
+  const tmux = agentExecutable('tmux');
+  if (!tmux) return Promise.resolve(NO_TMUX);
+  const args = ['-L', 'claude', 'list-panes', '-a', '-F',
+    'S\t#{session_name}\t#{session_created}\t#{session_attached}\t#{pane_pid}',
+    ';', 'list-clients', '-F', 'C\t#{session_name}\t#{client_pid}'];
+  return new Promise((resolve) => cp.execFile(tmux, args, { env: process.env, timeout: 3000 }, (err, stdout) => {
+    const state = { sessions: [], clients: [] };
+    for (const line of err ? [] : stdout.split('\n')) {
+      const [kind, name, ...f] = line.split('\t');
+      if (kind === 'S' && !state.sessions.some((s) => s.name === name)) {
+        state.sessions.push({ name, created: +f[0], attached: +f[1], pid: +f[2] });
+      } else if (kind === 'C') state.clients.push({ name, pid: +f[0] });
+    }
+    resolve(state);
+  }));
+}
+
+// A terminal that shows the claude tmux session name.
+function attachClaudeTmux(name) {
+  const terminal = vscode.window.createTerminal({ shellPath: agentExecutable('tmux'),
+    shellArgs: ['-L', 'claude', 'attach-session', '-t', '=' + name] });
+  tmuxTerminals.set(terminal, name);
+  return terminal;
+}
+
+// A terminal that starts claude in an interactive shell, whose claude function
+// decides where the session runs.
+function claudeTerminal(cwd, args, env) {
+  const line = ['claude', ...args].map((a) => /^[\w.-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+  return vscode.window.createTerminal({ cwd, ...(env && { env }), shellPath: '/bin/bash', shellArgs: ['-ic', line] });
+}
+
+// The claude tmux session that each terminal of this window shows: the
+// terminal's process is a client of the socket, or a client runs below it.
+async function mapTmuxTerminals(tmux) {
+  const clients = tmux.clients.map((c) => ({ name: c.name, tree: ancestors(c.pid) }));
+  for (const terminal of vscode.window.terminals) {
+    if (terminal.exitStatus) continue;
+    const pid = await terminal.processId;
+    const client = pid && clients.find((c) => c.tree.has(pid));
+    if (client) tmuxTerminals.set(terminal, client.name);
+    else tmuxTerminals.delete(terminal);
+  }
+}
+
+// Closing a terminal yourself ends the claude tmux session it shows. A window
+// that closes or opens another folder leaves the session running.
+function closeClaudeTmux(terminal) {
+  const name = tmuxTerminals.get(terminal);
+  const tmux = agentExecutable('tmux');
+  if (!name || !tmux || !vscode.TerminalExitReason || terminal.exitStatus?.reason !== vscode.TerminalExitReason.User) return;
+  cp.execFile(tmux, ['-L', 'claude', 'kill-session', '-t', '=' + name], { env: process.env }, () => {});
+  log(`claude tmux: ended ${name}, its terminal was closed`);
+}
 
 // The interactive Claude CLI session whose process is pid, from Claude's session record.
 function claudeRecord(pid) {
@@ -2045,49 +2148,81 @@ function claudeInTree(pid, depth = 3) {
   return null;
 }
 
+// The Claude sessions that run in this window's terminals outside tmux.
 async function claudeTerminalSessions() {
   const sessions = [];
-  for (const [index, terminal] of vscode.window.terminals.entries()) {
+  for (const terminal of vscode.window.terminals) {
     if (terminal.exitStatus) continue;
     const pid = await terminal.processId;
     const session = pid && claudeInTree(pid);
-    if (session && !sessions.some((s) => s.id === session.id)) sessions.push({ ...session, index });
+    if (session && !sessions.some((s) => s.id === session.id)) sessions.push(session);
   }
   return sessions;
 }
 
-// The record after a scan: the live sessions, and recorded ones absent for less than the grace period.
+// The host's Claude sessions in tmux in start order, then this window's others.
+async function claudeSessions(tmux) {
+  const sessions = [];
+  const add = (session) => { if (session && !sessions.some((s) => s.id === session.id)) sessions.push(session); };
+  [...tmux.sessions].sort((a, b) => a.created - b.created).forEach((s) => add(claudeRecord(s.pid)));
+  (await claudeTerminalSessions()).forEach(add);
+  return sessions;
+}
+
+// The record after a scan: the recorded sessions in their order, then new live
+// ones. A recorded session leaves after the grace period without its process.
 function nextRestoreRecord(recorded, live, absent, now) {
   const ids = new Set(live.map((s) => s.id));
   for (const id of ids) absent.delete(id);
   const kept = recorded.filter((s) => {
-    if (ids.has(s.id)) return false;
+    if (ids.has(s.id)) return true;
     const since = absent.get(s.id) ?? now;
     absent.set(s.id, since);
     if (now - since < RESTORE_GRACE_MS) return true;
     absent.delete(s.id);
     return false;
   });
-  return [...live, ...kept].sort((a, b) => a.index - b.index);
+  const added = live.filter((s) => !kept.some((k) => k.id === s.id));
+  return [...kept, ...added].map(({ id, cwd }) => ({ id, cwd }));
 }
 
-// Each recorded session resumes in a new terminal, in its folder and order,
-// unless it runs already or its transcript is gone. No terminal takes focus.
-function restoreClaudeSessions(recorded) {
-  if (!recorded.length) return log('claude restore: nothing recorded');
-  const claude = agentExecutable('claude');
-  if (!claude) return log('claude restore: the claude CLI is not on PATH or in ~/.local/bin');
+// In record order, each session in a tmux session that no client shows is
+// attached, and each session that no longer runs resumes in its folder. Then
+// the other tmux sessions that no client shows are attached, in start order.
+// No terminal takes focus.
+function restoreClaudeSessions(recorded, tmux) {
+  const panes = new Map();
+  for (const s of tmux.sessions) {
+    const session = claudeRecord(s.pid);
+    if (session) panes.set(session.id, s);
+  }
+  const attached = new Set();
+  const attach = (s) => {
+    attached.add(s.name);
+    attachClaudeTmux(s.name);
+    log(`claude restore: attached ${s.name}`);
+  };
   const projects = path.join(process.env.HOME || '', '.claude', 'projects');
   for (const session of recorded) {
+    const pane = panes.get(session.id);
+    if (pane && !pane.attached) {
+      attach(pane);
+      continue;
+    }
     const transcript = path.join(projects, session.cwd.replace(/[^a-zA-Z0-9]/g, '-'), session.id + '.jsonl');
-    const kept = claudeSessionPid(session.id) ? 'it runs already' : !fs.existsSync(transcript) && 'its transcript is gone';
+    const kept = pane || claudeSessionPid(session.id) ? 'it runs already'
+      : !fs.existsSync(transcript) ? 'its transcript is gone'
+        : !agentExecutable('claude') && 'the claude CLI is not on PATH or in ~/.local/bin';
     if (kept) {
       log(`claude restore: ${session.id} not resumed, ${kept}`);
       continue;
     }
-    vscode.window.createTerminal({ cwd: session.cwd, shellPath: claude, shellArgs: ['--resume', session.id] });
+    claudeTerminal(session.cwd, ['--resume', session.id]);
     log(`claude restore: resumed ${session.id} in ${session.cwd}`);
   }
+  const rest = tmux.sessions.filter((s) => !s.attached && !attached.has(s.name)).sort((a, b) => a.created - b.created);
+  rest.forEach(attach);
+  if (!recorded.length && !rest.length) log('claude restore: nothing recorded');
 }
 
 // ── Background Claude sessions ──────────────────────────────────────────────
@@ -2732,7 +2867,12 @@ function activate(context) {
     else if (e.affectsConfiguration('scmDiffStats')) provider.refresh();
   }));
 
-  restoreClaudeSessions(context.workspaceState.get(RESTORE_KEY, []));
+  // Until a scan writes the host's record, the record of this workspace stands in.
+  const restore = readRestoreRecord() || context.workspaceState.get(RESTORE_KEY, []);
+  claudeTmux().then((tmux) => {
+    if (claimRestore()) restoreClaudeSessions(restore, tmux);
+    else log('claude restore: another window restores');
+  });
   const attached = new Set(), activated = Date.now();
   const absent = new Map();
   let recording = false;
@@ -2740,10 +2880,12 @@ function activate(context) {
     if (recording) return;
     recording = true;
     try {
-      const recorded = context.workspaceState.get(RESTORE_KEY, []);
-      const next = nextRestoreRecord(recorded, await claudeTerminalSessions(), absent, Date.now());
-      if (JSON.stringify(next) !== JSON.stringify(recorded)) {
-        await context.workspaceState.update(RESTORE_KEY, next);
+      const tmux = await claudeTmux();
+      await mapTmuxTerminals(tmux);
+      const stored = readRestoreRecord(), recorded = stored || [];
+      const next = nextRestoreRecord(recorded, await claudeSessions(tmux), absent, Date.now());
+      if (!stored || JSON.stringify(next) !== JSON.stringify(recorded)) {
+        writeRestoreRecord(next);
         log('claude restore: recorded ' + (next.map((s) => s.id).join(', ') || 'no session'));
       }
     } catch (error) {
@@ -2766,7 +2908,8 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
   // A terminal that opens, or a command that starts in one, may be claude.
   const watch = claudeSessionWatch(recordClaudeSessions);
-  context.subscriptions.push(watch, vscode.window.onDidOpenTerminal(watch.start));
+  context.subscriptions.push(watch, vscode.window.onDidOpenTerminal(watch.start),
+    vscode.window.onDidCloseTerminal(closeClaudeTmux));
   if (vscode.window.onDidStartTerminalShellExecution) {
     context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(watch.start));
   }

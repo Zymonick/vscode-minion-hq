@@ -233,25 +233,45 @@ refresh, polling, or agent scans.
 
 ## Claude session restore
 
-Quitting VS Code ends the WSL server and every terminal. Each window brings
-back the Claude sessions of its terminals at its next start:
+Over SSH, the shell function `claude` of business-operations
+`agent-config/shell/claude.sh` starts each interactive session in its own tmux
+session on the socket `claude`. Such a session keeps running when its
+terminal, the window or the SSH connection ends. Elsewhere, quitting VS Code
+ends every terminal. At its next start, the window brings back the same
+Claude sessions:
 
-- The agent scan records, in the window's workspace state, each interactive
-  `claude` CLI session whose process is a terminal's process or runs at most
-  three generations below it. Each entry keeps the session id, the folder the
-  session started in, and the terminal order. The id comes from Claude's
-  session record with a matching process start time.
+- Minion HQ starts Claude through that function: `/bin/bash -ic` with the
+  `claude` command line, also for the Claude control of a PR row.
+- The agent scan records the host's Claude sessions in
+  `~/.local/state/minion-hq/claude-sessions.json`: each tmux session of the
+  socket whose pane process is an interactive `claude` CLI session, then each
+  such session whose process is a terminal's process or runs at most three
+  generations below it. Each entry keeps the session id and the folder the
+  session started in. The id comes from Claude's session record with a
+  matching process start time. Entries keep their order; new ones come last.
+  A window that opens another folder keeps the record. Until a scan writes the
+  file, the workspace record of Minion HQ 0.13.59 and earlier stands in.
 - For 15 seconds after a terminal opens or a command starts in a terminal, the
   scan runs each second on one timer, so a session started shortly before the
   window closes is recorded.
 - A recorded session leaves the record after 30 seconds without its process.
   A closing window ends the extension host first, so its sessions stay recorded.
-- At activation, each recorded session resumes with `claude --resume <id>` in
-  a new terminal in its folder, in recorded order. A running session, or one
-  without its transcript, does not resume. No terminal takes focus.
+- At activation, the first window of the host restores. A window that
+  activates within 10 seconds while that window's extension host runs does
+  not. In record order, a session in a tmux session that no client shows gets
+  a new terminal that attaches to it. A session that no longer runs resumes
+  with `claude --resume <id>` in its folder. A session that runs elsewhere, or
+  one without its transcript, does neither. Then each other tmux session of
+  the socket that no client shows is attached, in start order. No terminal
+  takes focus.
+- The Claude control of a PR row focuses the terminal of a tmux client that
+  shows the PR's session, or attaches the session when no client shows it.
+- Closing a terminal yourself ends the tmux session that it shows. A terminal
+  that ends because the window closes or opens another folder leaves its
+  session running.
 - Plain shells and Codex terminals are not restored.
 - The `Minion HQ` output channel logs each change of the record and, at
-  activation, each session resumed or not resumed with the reason.
+  activation, each session attached, resumed or not resumed with the reason.
 
 ## Background Claude sessions
 

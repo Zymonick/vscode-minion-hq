@@ -26,6 +26,10 @@ function fixture(t) {
   for (const dir of [repo, titles, sessions, bin]) fs.mkdirSync(dir, { recursive: true });
   const claude = path.join(bin, 'claude');
   fs.writeFileSync(claude, '#!/bin/sh\n', { mode: 0o755 });
+  // tmux logs its arguments and prints tmux.out, or fails like tmux without a server.
+  const tmux = path.join(bin, 'tmux');
+  const tmuxOut = path.join(root, 'tmux.out'), tmuxLog = path.join(root, 'tmux.log');
+  fs.writeFileSync(tmux, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${tmuxLog}'\n[ -f '${tmuxOut}' ] || exit 1\nexec /bin/cat '${tmuxOut}'\n`, { mode: 0o755 });
   let age = 0;
   // Each session is newer than the one recorded before it.
   const session = (id, title, cwd = workspace) => {
@@ -59,17 +63,29 @@ function fixture(t) {
       showErrorMessage: async (message) => { errors.push(message); },
     },
     workspace: { workspaceFolders: [{ uri: { fsPath: workspace } }], getConfiguration: () => ({ get: () => '' }) },
+    TerminalExitReason: { Unknown: 0, Shutdown: 1, Process: 2, User: 3, Extension: 4 },
   };
   const env = { ...process.env, HOME: home, PATH: bin };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, nextRestoreRecord, restoreClaudeSessions, claudeSessionWatch, attachBackgroundSessions });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, claudeSessions, nextRestoreRecord, restoreClaudeSessions, claudeSessionWatch, attachBackgroundSessions, claudeTmux, claimRestore, readRestoreRecord, writeRestoreRecord, mapTmuxTerminals, closeClaudeTmux });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout, setInterval, clearInterval,
     process: Object.assign(Object.create(process), { env }),
     require: (name) => name === 'vscode' ? vscode : require(name),
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
-  return { ...api, provider, repo, workspace, claude, env, sessions, session, live, terminal,
-    terminals: vscode.window.terminals, created, shown, infos, errors, logged,
+  // tmux list-panes and list-clients output: sessions [name, created, attached, pane pid], clients [name, pid].
+  const tmuxState = (sessions, clients = []) => fs.writeFileSync(tmuxOut, [
+    ...sessions.map(([name, made, attached, pid]) => `S\t${name}\t${made}\t${attached}\t${pid}`),
+    ...clients.map(([name, pid]) => `C\t${name}\t${pid}`)].join('\n') + '\n');
+  const tmuxCalls = () => fs.existsSync(tmuxLog) ? fs.readFileSync(tmuxLog, 'utf8').trim().split('\n') : [];
+  // A sleeping child process stands in for another claude or a tmux client.
+  const child = () => {
+    const proc = require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore' });
+    t.after(() => proc.kill());
+    return proc.pid;
+  };
+  return { ...api, provider, repo, workspace, claude, tmux, env, sessions, session, live, terminal,
+    tmuxState, tmuxCalls, child, terminals: vscode.window.terminals, created, shown, infos, errors, logged,
     click: () => provider.onMessage({ type: 'claude', repoPath: repo }) };
 }
 
@@ -113,14 +129,14 @@ test("a PR's newest Claude session resumes in a terminal and continues, in the f
   f.terminals.push(f.terminal('Claude pr-70', 0), f.terminal('Claude pr-7', 0, { code: 0 }));
   await f.click();
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, env: { MINION_HQ_CLAUDE_PR: f.repo },
-    shellPath: f.claude, shellArgs: ['--resume', '22222222-2222-4222-8222-222222222222', 'continue'] }]);
+    shellPath: '/bin/bash', shellArgs: ['-ic', 'claude --resume 22222222-2222-4222-8222-222222222222 continue'] }]);
   assert.deepEqual(f.shown, ['claude']);
 
   f.created.length = 0;
   f.session('77777777-7777-4777-8777-777777777777', 'pr-7: clear review status');
   await f.click();
   assert.equal(f.created[0].cwd, f.workspace);
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['--resume', '77777777-7777-4777-8777-777777777777', 'continue']);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['-ic', 'claude --resume 77777777-7777-4777-8777-777777777777 continue']);
   assert.deepEqual(f.errors, []);
 });
 
@@ -129,7 +145,7 @@ test('without a Claude session, a new one starts in the worktree with nothing se
   f.session('55555555-5555-7555-8555-555555555555', 'pr-7: codex thread without a Claude transcript', null);
   await f.click();
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, env: { MINION_HQ_CLAUDE_PR: f.repo },
-    shellPath: f.claude, shellArgs: [] }]);
+    shellPath: '/bin/bash', shellArgs: ['-ic', 'claude'] }]);
 });
 
 test("new Claude terminals keep Claude's live title and stay attached to their PR", async (t) => {
@@ -179,7 +195,26 @@ test('a running session is focused in the terminal holding it and never resumed 
   // A record whose pid now belongs to another process is stale.
   f.live(id, process.pid, '1');
   await f.click();
-  assert.deepEqual(Array.from(f.created[0].shellArgs), ['--resume', id, 'continue']);
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['-ic', `claude --resume ${id} continue`]);
+});
+
+test("a PR session in tmux is focused in the terminal of its client, or attached when no client shows it", async (t) => {
+  const f = fixture(t);
+  const id = '11111111-1111-4111-8111-111111111111';
+  f.session(id, 'pr-7: clear review status');
+  f.live(id, process.pid); // this test process stands in for claude in the tmux pane
+  const client = f.child();
+  f.tmuxState([['claude-pr-7', 100, 1, process.pid]], [['claude-pr-7', client]]);
+  f.terminals.push(f.terminal('bash', 1), f.terminal('tmux', client));
+  await f.click();
+  assert.deepEqual(f.shown, ['tmux @' + client]);
+
+  f.terminals.length = 0;
+  f.tmuxState([['claude-pr-7', 100, 0, process.pid]]);
+  await f.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [
+    { shellPath: f.tmux, shellArgs: ['-L', 'claude', 'attach-session', '-t', '=claude-pr-7'] }]);
+  assert.deepEqual(f.infos, []);
 });
 
 test('unknown and non-PR rows open nothing, and a missing claude CLI is reported', async (t) => {
@@ -196,15 +231,15 @@ test('unknown and non-PR rows open nothing, and a missing claude CLI is reported
   assert.deepEqual(f.errors, ['Could not open Claude for pr-7: the claude CLI is not on PATH or in ~/.local/bin']);
 });
 
-test("the Claude sessions of this window's terminals are recorded in terminal order", async (t) => {
+test("the Claude sessions of this window's terminals are found below the terminal's process", async (t) => {
   const f = fixture(t);
   const id = '11111111-1111-4111-8111-111111111111';
   f.live(id, process.pid);
   // This test process stands in for claude: first as the terminal's process, then below the terminal's shell.
   f.terminals.push(f.terminal('starting', 0), f.terminal('claude', process.pid), f.terminal('exited', process.pid, { code: 0 }));
-  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTerminalSessions())), [{ id, cwd: f.workspace, index: 1 }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTerminalSessions())), [{ id, cwd: f.workspace }]);
   f.terminals.splice(1, 2, f.terminal('bash', process.ppid));
-  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTerminalSessions())), [{ id, cwd: f.workspace, index: 1 }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTerminalSessions())), [{ id, cwd: f.workspace }]);
 
   // A record whose pid now belongs to another process, or of a non-interactive run, is no session.
   f.live(id, process.pid, '1');
@@ -215,10 +250,10 @@ test("the Claude sessions of this window's terminals are recorded in terminal or
   assert.deepEqual(Array.from(await f.claudeTerminalSessions()), []);
 });
 
-test('a recorded session leaves the record after 30 seconds without its process', (t) => {
+test('the record keeps its order, adds new sessions last, and drops one after 30 seconds without its process', (t) => {
   const f = fixture(t);
   const ids = (record) => Array.from(record, (s) => s.id);
-  const a = { id: 'a', cwd: '/w', index: 0 }, b = { id: 'b', cwd: '/w', index: 1 };
+  const a = { id: 'a', cwd: '/w' }, b = { id: 'b', cwd: '/w' };
   const absent = new Map();
   let record = f.nextRestoreRecord([], [a, b], absent, 0);
   record = f.nextRestoreRecord(record, [b], absent, 1000);
@@ -228,36 +263,100 @@ test('a recorded session leaves the record after 30 seconds without its process'
   record = f.nextRestoreRecord(record, [b], absent, 40000);
   assert.deepEqual(ids(f.nextRestoreRecord(record, [b], absent, 69999)), ['a', 'b'], 'a returning session restarts its grace period');
   assert.deepEqual(ids(f.nextRestoreRecord(record, [b], absent, 70000)), ['b']);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.nextRestoreRecord([a, b], [{ id: 'c', cwd: '/w', index: 4 }, b], new Map(), 0))),
+    [a, b, { id: 'c', cwd: '/w' }]);
 });
 
-test('recorded sessions resume in new terminals in their folder and order, never twice', (t) => {
+test("the host's sessions are the Claude sessions in tmux in start order, then this window's others", async (t) => {
   const f = fixture(t);
-  const [a, b, running] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+  const [early, late, own] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
     '33333333-3333-4333-8333-333333333333'];
-  f.session(a, null);
-  f.session(b, null, f.repo);
+  const [pane1, pane2] = [f.child(), f.child()];
+  f.live(late, pane1);
+  f.live(early, pane2);
+  f.live(own, process.pid);
+  f.terminals.push(f.terminal('claude', process.pid));
+  f.tmuxState([['claude-kylie', 200, 1, pane1], ['claude-kylie-2', 100, 0, pane2], ['claude-other', 50, 0, 999999999]]);
+  const tmux = await f.claudeTmux();
+  assert.deepEqual(JSON.parse(JSON.stringify(tmux.sessions.map((s) => s.name))), ['claude-kylie', 'claude-kylie-2', 'claude-other']);
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeSessions(tmux))).map((s) => s.id), [early, late, own]);
+  assert.match(f.tmuxCalls()[0], /^-L claude list-panes -a -F .* ; list-clients -F /);
+
+  fs.rmSync(f.tmux);
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.claudeTmux())), { sessions: [], clients: [] }, 'no tmux');
+});
+
+test('the record is a file of the host, and only the first window that activates restores', (t) => {
+  const f = fixture(t);
+  assert.equal(f.readRestoreRecord(), null);
+  f.writeRestoreRecord([{ id: 'a', cwd: '/w' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.readRestoreRecord())), [{ id: 'a', cwd: '/w' }]);
+  const file = path.join(f.env.HOME, '.local', 'state', 'minion-hq', 'claude-sessions.json');
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['claude-sessions.json']);
+
+  assert.equal(f.claimRestore(), true);
+  assert.equal(f.claimRestore(), false, 'another window of the host activates within 10 seconds');
+  assert.equal(f.claimRestore(Date.now() + 11000), true, 'a later window restores again');
+  fs.writeFileSync(file + '.lock', '999999999');
+  assert.equal(f.claimRestore(), true, 'the extension host of the claim has ended');
+});
+
+test('recorded sessions are attached in tmux or resume in their folder, in record order, never twice', async (t) => {
+  const f = fixture(t);
+  const [gone, resumed, detached, shown, running] = ['11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333',
+    '44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555'];
+  f.session(resumed, null, f.repo);
   f.session(running, null);
   f.live(running, process.pid);
+  const [pane1, pane2] = [f.child(), f.child()];
+  f.live(detached, pane1);
+  f.live(shown, pane2);
+  f.tmuxState([['claude-kylie', 300, 0, pane1], ['claude-kylie-2', 200, 1, pane2], ['claude-other', 100, 0, 999999999]]);
   f.restoreClaudeSessions([
-    { id: a, cwd: f.workspace, index: 0 },
-    { id: '44444444-4444-4444-8444-444444444444', cwd: f.workspace, index: 1 }, // its transcript is gone
-    { id: running, cwd: f.workspace, index: 2 },
-    { id: b, cwd: f.repo, index: 3 },
-  ]);
+    { id: gone, cwd: f.workspace },
+    { id: resumed, cwd: f.repo },
+    { id: detached, cwd: f.workspace },
+    { id: shown, cwd: f.workspace },
+    { id: running, cwd: f.workspace },
+  ], await f.claudeTmux());
+  const attach = (name) => ({ shellPath: f.tmux, shellArgs: ['-L', 'claude', 'attach-session', '-t', '=' + name] });
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [
-    { cwd: f.workspace, shellPath: f.claude, shellArgs: ['--resume', a] },
-    { cwd: f.repo, shellPath: f.claude, shellArgs: ['--resume', b] },
+    { cwd: f.repo, shellPath: '/bin/bash', shellArgs: ['-ic', `claude --resume ${resumed}`] },
+    attach('claude-kylie'),
+    attach('claude-other'),
   ]);
   assert.deepEqual(f.shown, [], 'restored terminals take no focus');
   assert.deepEqual(f.logged, [
-    `claude restore: resumed ${a} in ${f.workspace}`,
-    'claude restore: 44444444-4444-4444-8444-444444444444 not resumed, its transcript is gone',
+    `claude restore: ${gone} not resumed, its transcript is gone`,
+    `claude restore: resumed ${resumed} in ${f.repo}`,
+    'claude restore: attached claude-kylie',
+    `claude restore: ${shown} not resumed, it runs already`,
     `claude restore: ${running} not resumed, it runs already`,
-    `claude restore: resumed ${b} in ${f.repo}`,
+    'claude restore: attached claude-other',
   ]);
   f.logged.length = 0;
-  f.restoreClaudeSessions([]);
+  f.restoreClaudeSessions([], { sessions: [], clients: [] });
   assert.deepEqual(f.logged, ['claude restore: nothing recorded']);
+});
+
+test('closing a terminal yourself ends the tmux session it shows; a closing window does not', async (t) => {
+  const f = fixture(t);
+  const client = f.child();
+  const mine = f.terminal('tmux', client), other = f.terminal('bash', 1);
+  f.terminals.push(mine, other);
+  f.tmuxState([['claude-kylie', 100, 1, 999999999]], [['claude-kylie', client]]);
+  await f.mapTmuxTerminals(await f.claudeTmux());
+  const calls = f.tmuxCalls().length;
+  mine.exitStatus = { code: undefined, reason: 1 };
+  f.closeClaudeTmux(mine);
+  other.exitStatus = { code: undefined, reason: 3 };
+  f.closeClaudeTmux(other);
+  mine.exitStatus = { code: undefined, reason: 3 };
+  f.closeClaudeTmux(mine);
+  for (let i = 0; i < 40 && f.tmuxCalls().length === calls; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(f.tmuxCalls().slice(calls), ['-L claude kill-session -t =claude-kylie']);
+  assert.deepEqual(f.logged, ['claude tmux: ended claude-kylie, its terminal was closed']);
 });
 
 test('a terminal that opens or starts a command is scanned each second for 15 seconds', (t) => {

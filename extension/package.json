@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.67",
+  "version": "0.13.68",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -31,6 +31,10 @@
           "type": "webview",
           "id": "scmDiffStats",
           "name": "Minion HQ"
+        },
+        {
+          "id": "scmDiffStatsTerminals",
+          "name": "Terminals"
         }
       ]
     },
@@ -51,6 +55,10 @@
         "icon": "$(expand-all)"
       },
       {
+        "command": "scmDiffStats.showTerminal",
+        "title": "Show Terminal"
+      },
+      {
         "command": "scmDiffStats.refresh",
         "title": "Refresh Minion HQ",
         "icon": "$(refresh)"
@@ -60,6 +68,10 @@
       "commandPalette": [
         {
           "command": "scmDiffStats.loading",
+          "when": "false"
+        },
+        {
+          "command": "scmDiffStats.showTerminal",
           "when": "false"
         }
       ],
@@ -85,6 +97,9 @@
           "group": "navigation"
         }
       ]
+    },
+    "configurationDefaults": {
+      "terminal.integrated.tabs.enabled": false
     },
     "configuration": {
       "title": "Minion HQ",

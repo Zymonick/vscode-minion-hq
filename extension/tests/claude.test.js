@@ -38,7 +38,7 @@ function fixture(t) {
     const dir = path.join(home, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
     fs.mkdirSync(dir, { recursive: true });
     const transcript = path.join(dir, id + '.jsonl');
-    fs.writeFileSync(transcript, '{}\n');
+    fs.writeFileSync(transcript, `{"type":"mode"}\n${JSON.stringify({ cwd })}\n`);
     const when = new Date(Date.UTC(2026, 9, 1) + 60000 * ++age);
     fs.utimesSync(transcript, when, when);
   };
@@ -85,8 +85,8 @@ function fixture(t) {
     ...clients.map(([name, pid, tty = '/dev/pts/0']) => `C\t${name}\t${pid}\t${tty}`)].join('\n') + '\n');
   const tmuxCalls = () => fs.existsSync(tmuxLog) ? fs.readFileSync(tmuxLog, 'utf8').trim().split('\n') : [];
   // A sleeping child process stands in for another claude or a tmux client.
-  const child = () => {
-    const proc = require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore' });
+  const child = (env = { PATH: process.env.PATH }) => {
+    const proc = require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore', env });
     t.after(() => proc.kill());
     return proc.pid;
   };
@@ -130,9 +130,9 @@ test('every PR row carries one Claude control, and clicking it asks the host wit
 test("a PR's newest Claude session resumes in a terminal and continues, in the folder it started in", async (t) => {
   const f = fixture(t);
   f.session('11111111-1111-4111-8111-111111111111', 'pr-7: clear review status');
+  f.session('44444444-4444-4444-8444-444444444444', 'pr-7: elsewhere', '/home/someone/other-repo');
   f.session('22222222-2222-4222-8222-222222222222', 'PR-7: clear review status', f.repo);
   f.session('33333333-3333-4333-8333-333333333333', 'pr-70: another pull request');
-  f.session('44444444-4444-4444-8444-444444444444', 'pr-7: elsewhere', '/home/someone/other-repo');
   f.session('55555555-5555-7555-8555-555555555555', 'pr-7: codex thread without a Claude transcript', null);
   f.session('66666666-6666-4666-8666-666666666666', null); // a transcript the registry never titled
   f.terminals.push(f.terminal('Claude pr-70', 0), f.terminal('Claude pr-7', 0, { code: 0 }));
@@ -146,6 +146,13 @@ test("a PR's newest Claude session resumes in a terminal and continues, in the f
   await f.click();
   assert.equal(f.created[0].cwd, f.workspace);
   assert.deepEqual(Array.from(f.created[0].shellArgs), ['-ic', 'claude --resume 77777777-7777-4777-8777-777777777777 continue']);
+
+  // A session that started in another folder, such as a Remote Control service's, belongs to the PR as well.
+  f.created.length = 0;
+  f.session('88888888-8888-4888-8888-888888888888', 'pr-7: rename without pr', '/home/someone/other-repo');
+  await f.click();
+  assert.equal(f.created[0].cwd, '/home/someone/other-repo');
+  assert.deepEqual(Array.from(f.created[0].shellArgs), ['-ic', 'claude --resume 88888888-8888-4888-8888-888888888888 continue']);
   assert.deepEqual(f.errors, []);
 });
 
@@ -197,11 +204,15 @@ test('a running session is focused in the terminal holding it and never resumed 
   assert.deepEqual(f.shown, ['zsh @' + process.ppid]);
 
   f.terminals.length = 0;
+  const outside = f.child(); // a claude outside every terminal and tmux pane
+  fs.rmSync(path.join(f.sessions, process.pid + '.json'));
+  f.live(id, outside);
   await f.click();
   assert.deepEqual(f.created, []);
-  assert.deepEqual(f.infos, [`The Claude session for pr-7 is already running outside this window's terminals (pid ${process.pid}).`]);
+  assert.deepEqual(f.infos, [`The Claude session for pr-7 is already running outside this window's terminals (pid ${outside}).`]);
 
   // A record whose pid now belongs to another process is stale.
+  fs.rmSync(path.join(f.sessions, outside + '.json'));
   f.live(id, process.pid, '1');
   await f.click();
   assert.deepEqual(Array.from(f.created[0].shellArgs), ['-ic', `claude --resume ${id} continue`]);
@@ -222,6 +233,18 @@ test("a PR session in tmux is focused in the terminal of its client, or attached
   f.tmuxState([['claude-pr-7', 100, 0, process.pid]]);
   await f.click();
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [f.attach('claude-pr-7')]);
+  assert.deepEqual(f.infos, []);
+});
+
+test('a PR session on another tmux server is attached in a terminal of the PR', async (t) => {
+  const f = fixture(t);
+  const id = '11111111-1111-4111-8111-111111111111';
+  f.session(id, 'pr-7: rename without pr', '/home/someone/business-operations');
+  const service = f.child({ PATH: process.env.PATH, TMUX: '/tmp/tmux-1000/default,2025,0', TMUX_PANE: '%0' });
+  f.live(id, service);
+  await f.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, env: { MINION_HQ_CLAUDE_PR: f.repo },
+    shellPath: f.tmux, shellArgs: ['-S', '/tmp/tmux-1000/default', 'attach-session', '-t', '%0'] }]);
   assert.deepEqual(f.infos, []);
 });
 

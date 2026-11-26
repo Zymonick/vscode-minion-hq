@@ -58,6 +58,8 @@ function harness(childProcess = cp) {
       createOutputChannel: () => ({ appendLine() {} }),
       onDidOpenTerminal: disposable,
       onDidCloseTerminal: disposable,
+      onDidChangeActiveTerminal: disposable,
+      createTreeView: () => ({ visible: false, onDidChangeVisibility: disposable, dispose() {} }),
       showErrorMessage: async (message) => { errors.push(message); },
       showInformationMessage: async (message) => { infos.push(message); },
       registerWebviewViewProvider: (name, value) => { provider = value; return disposable(); },

@@ -216,13 +216,17 @@ changes do not open duplicate terminals:
   `claude --resume <id> continue` in the folder it started in, so it continues
   its work at once. A session belongs to the PR when its id in
   `.ci/session-titles` has a title `scripts/rename-session` began with that
-  `pr-N`, and its transcript lies in the Claude project directory of the PR
-  worktree or of a workspace folder. Codex threads in the same registry and
-  sessions of other projects do not count.
+  `pr-N`, and its transcript lies in any Claude project directory, also of a
+  folder outside Kylie such as the one of a Remote Control service. The folder
+  it started in is the first `cwd` in the transcript's first 256 KB whose
+  project directory holds the transcript. Codex threads in the same registry
+  do not count.
 - A session that is already running is never resumed a second time: the
-  terminal whose process tree holds it is focused, or, outside this window's
-  terminals, a message names its pid. Liveness comes from Claude's session
-  record with a matching process start time.
+  terminal whose process tree holds it is focused, its tmux session is
+  attached in a new terminal of the PR, also on another tmux server named by
+  the process's `TMUX` and `TMUX_PANE`, or else a message names its pid.
+  Liveness comes from Claude's session record with a matching process start
+  time.
 - Without a session, `claude` starts in the PR worktree, so its first prompt
   attaches it to the PR.
 
@@ -317,6 +321,21 @@ Claude sessions at their tab places:
   restores other plain shells at their places, with a new process.
 - The `Minion HQ` output channel logs each change of the record and, at
   activation, each session attached, resumed or not resumed with the reason.
+
+## Terminals view
+
+The `Terminals` view below Minion HQ lists every terminal of the window, also
+plain shells, in the order VS Code gives extensions: the order in which the
+terminals opened. Each row shows the terminal's live name with a terminal icon.
+A click shows the terminal and gives it focus. While the view is visible, the
+row of the active terminal is selected without focus; a hidden view never opens
+itself. VS Code reports no name change to extensions, so a visible view
+compares the names each second and redraws only renamed rows; a hidden view
+runs no timer. Minion HQ contributes the default `false` for
+`terminal.integrated.tabs.enabled`, so the terminal panel hides its own tab
+list from the same start that shows the view, and the terminal gets its width;
+a user or Machine setting overrides it. VS Code's `Terminal: Focus Next
+Terminal` and `Focus Previous Terminal` still switch terminals.
 
 ## Background Claude sessions
 

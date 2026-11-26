@@ -1931,27 +1931,56 @@ function scanAgents(repoPaths) {
 // Every PR row carries a Claude prompt: `claude` in a VS Code terminal.
 // scripts/rename-session records each agent session's PR title in
 // .ci/session-titles/<id>; Codex threads share that directory, so only ids with
-// a Claude transcript count. A session resumes in the folder it started in, the
-// PR worktree or a workspace folder. Looked up on click, never during a refresh.
+// a Claude transcript count, in any Claude project directory. A session resumes
+// in the folder it started in. Looked up on click, never during a refresh.
 function claudeSessionForPr(repoPath, serial) {
   const titles = path.join(ciStateDir(repoPath), 'session-titles');
   const projects = path.join(process.env.HOME || '', '.claude', 'projects');
-  const folders = [repoPath, ...(vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath)];
   const own = new RegExp('^pr-' + serial + '(?![0-9])', 'i');
-  let ids;
-  try { ids = fs.readdirSync(titles); } catch { return null; }
+  let ids, dirs;
+  try { ids = fs.readdirSync(titles); dirs = fs.readdirSync(projects); } catch { return null; }
   let newest = null;
   for (const id of ids) {
     if (!own.test(readCiState(titles, id) || '')) continue;
-    for (const cwd of folders) {
+    for (const dir of dirs) {
+      const file = path.join(projects, dir, id + '.jsonl');
       let mtime;
-      try {
-        mtime = fs.statSync(path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), id + '.jsonl')).mtimeMs;
-      } catch { continue; }
-      if (!newest || mtime > newest.mtime) newest = { id, cwd, mtime };
+      try { mtime = fs.statSync(file).mtimeMs; } catch { continue; }
+      if (!newest || mtime > newest.mtime) newest = { id, file, mtime };
     }
   }
-  return newest;
+  const cwd = newest && transcriptCwd(newest.file);
+  return cwd ? { id: newest.id, cwd, mtime: newest.mtime } : null;
+}
+
+// The folder a Claude transcript started in: the first cwd in its first 256 KB
+// whose Claude project directory holds the transcript.
+function transcriptCwd(file) {
+  let head;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buffer = Buffer.alloc(262144);
+      head = buffer.toString('utf8', 0, fs.readSync(fd, buffer, 0, buffer.length, 0));
+    } finally { fs.closeSync(fd); }
+  } catch { return null; }
+  const dir = path.basename(path.dirname(file));
+  for (const match of head.matchAll(/"cwd":("(?:[^"\\]|\\.)*")/g)) {
+    let cwd;
+    try { cwd = JSON.parse(match[1]); } catch { continue; }
+    if (cwd.replace(/[^a-zA-Z0-9]/g, '-') === dir) return cwd;
+  }
+  return null;
+}
+
+// The tmux socket and pane of a process that runs in a tmux pane, from its
+// environment, or null.
+function tmuxPaneOf(pid) {
+  let env;
+  try { env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0'); } catch { return null; }
+  const value = (name) => (env.find((e) => e.startsWith(name + '=')) || '').slice(name.length + 1);
+  const socket = value('TMUX').split(',')[0], pane = value('TMUX_PANE');
+  return socket && pane ? { socket, pane } : null;
 }
 
 // The live process of a Claude session, from Claude's session records. A pid
@@ -2004,7 +2033,7 @@ function agentExecutable(command, preferred) {
 }
 
 // Focus the PR's Claude terminal, or attach its tmux session that no terminal
-// of this window shows; else resume its newest session with the prompt
+// of this window shows, also on another tmux server; else resume its newest session with the prompt
 // `continue`, or start one in its worktree, where the first prompt attaches it
 // to the PR. A session already running elsewhere is never resumed a second time.
 async function openClaude(repo) {
@@ -2023,6 +2052,12 @@ async function openClaude(repo) {
     if (running) return running.show();
     const pane = tmux.sessions.find((s) => s.pid === pid);
     if (pane) return attachClaudeTmux(pane.name).show();
+    // Another tmux server, such as the one of a Remote Control service.
+    const other = tmuxPaneOf(pid);
+    if (other && agentExecutable('tmux')) {
+      return vscode.window.createTerminal({ cwd: repo.repoPath, env: { MINION_HQ_CLAUDE_PR: repo.repoPath },
+        shellPath: agentExecutable('tmux'), shellArgs: ['-S', other.socket, 'attach-session', '-t', other.pane] }).show();
+    }
     vscode.window.showInformationMessage(`The Claude session for ${repo.name} is already running outside this window's terminals (pid ${pid}).`);
     return;
   }
@@ -2899,7 +2934,81 @@ class StatsViewProvider {
   }
 }
 
+// The window's terminals below Minion HQ, in the order they opened, so the
+// terminal panel can hide its own tab list. A click shows the terminal, and the
+// active terminal stays selected. VS Code reports no title change to
+// extensions, so a visible list compares the names each second.
+const TERMINAL_NAMES_MS = 1000;
+
+class TerminalList {
+  constructor() {
+    this.emitter = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this.emitter.event;
+    this.names = new WeakMap(); // the name each terminal's row shows
+    this.ids = new WeakMap();
+    this.count = 0;
+    this.view = null;
+    this.timer = null;
+  }
+
+  getChildren(element) {
+    return element ? [] : [...vscode.window.terminals];
+  }
+
+  getParent() {
+    return undefined;
+  }
+
+  getTreeItem(terminal) {
+    if (!this.ids.has(terminal)) this.ids.set(terminal, 'terminal-' + ++this.count);
+    this.names.set(terminal, terminal.name);
+    const item = new vscode.TreeItem(terminal.name);
+    item.id = this.ids.get(terminal);
+    item.iconPath = new vscode.ThemeIcon('terminal');
+    item.tooltip = terminal.name;
+    item.command = { command: 'scmDiffStats.showTerminal', title: 'Show Terminal', arguments: [terminal] };
+    return item;
+  }
+
+  refresh() {
+    this.emitter.fire(undefined);
+  }
+
+  compareNames() {
+    const renamed = vscode.window.terminals.filter((t) => this.names.has(t) && this.names.get(t) !== t.name);
+    if (renamed.length) this.emitter.fire(renamed);
+  }
+
+  selectActive() {
+    const active = vscode.window.activeTerminal;
+    if (!this.view || !this.view.visible || !active) return;
+    Promise.resolve(this.view.reveal(active, { select: true, focus: false })).catch(() => {});
+  }
+
+  // Only a visible list compares names and follows the active terminal.
+  watch(view) {
+    this.view = view;
+    const visibility = () => {
+      clearInterval(this.timer);
+      this.timer = null;
+      if (!view.visible) return;
+      this.compareNames();
+      this.timer = setInterval(() => this.compareNames(), TERMINAL_NAMES_MS);
+      this.selectActive();
+    };
+    visibility();
+    return [view.onDidChangeVisibility(visibility), { dispose: () => clearInterval(this.timer) }];
+  }
+}
+
 function activate(context) {
+  const terminalList = new TerminalList();
+  const terminalView = vscode.window.createTreeView('scmDiffStatsTerminals', { treeDataProvider: terminalList });
+  context.subscriptions.push(terminalView, ...terminalList.watch(terminalView),
+    vscode.commands.registerCommand('scmDiffStats.showTerminal', (terminal) => terminal && terminal.show()),
+    vscode.window.onDidOpenTerminal(() => terminalList.refresh()),
+    vscode.window.onDidCloseTerminal(() => terminalList.refresh()),
+    vscode.window.onDidChangeActiveTerminal(() => terminalList.selectActive()));
   const provider = new StatsViewProvider();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('scmDiffStats', provider));
   vscode.commands.executeCommand('setContext', 'scmDiffStats.loading', provider.loading);

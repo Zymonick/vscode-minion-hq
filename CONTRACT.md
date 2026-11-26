@@ -269,6 +269,12 @@ Claude sessions:
 - Closing a terminal yourself ends the tmux session that it shows. A terminal
   that ends because the window closes or opens another folder leaves its
   session running.
+- A terminal whose tmux client started before the window's extension host came
+  back from an earlier window, as after a lost connection. VS Code then shows
+  nothing that the client draws, although keys still reach Claude. The agent
+  scan attaches that session in a new terminal without focus and detaches the
+  old client once, so the old terminal ends by itself and the session keeps
+  running. The `Minion HQ` output channel logs each such session.
 - Before it restores Claude sessions, the restoring window opens the shells
   `bash local` and `bash prd` in the default profile, so both lead the
   terminal list. `bash prd` runs `ssh prd`; `bash local` shows the panel

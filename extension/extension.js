@@ -2087,14 +2087,14 @@ function claudeTmux() {
   if (!tmux) return Promise.resolve(NO_TMUX);
   const args = ['-L', 'claude', 'list-panes', '-a', '-F',
     'S\t#{session_name}\t#{session_created}\t#{session_attached}\t#{pane_pid}',
-    ';', 'list-clients', '-F', 'C\t#{session_name}\t#{client_pid}'];
+    ';', 'list-clients', '-F', 'C\t#{session_name}\t#{client_pid}\t#{client_tty}'];
   return new Promise((resolve) => cp.execFile(tmux, args, { env: process.env, timeout: 3000 }, (err, stdout) => {
     const state = { sessions: [], clients: [] };
     for (const line of err ? [] : stdout.split('\n')) {
       const [kind, name, ...f] = line.split('\t');
       if (kind === 'S' && !state.sessions.some((s) => s.name === name)) {
         state.sessions.push({ name, created: +f[0], attached: +f[1], pid: +f[2] });
-      } else if (kind === 'C') state.clients.push({ name, pid: +f[0] });
+      } else if (kind === 'C') state.clients.push({ name, pid: +f[0], tty: f[1] });
     }
     resolve(state);
   }));
@@ -2130,16 +2130,38 @@ function claudeTerminal(cwd, args, env) {
   return vscode.window.createTerminal({ cwd, ...(env && { env }), shellPath: '/bin/bash', shellArgs: ['-ic', line] });
 }
 
+// The process start time of pid in clock ticks after boot, or null.
+function startTicks(pid) {
+  try { return +procStat(pid).start; } catch { return null; }
+}
+
+const reattachedClients = new Set(); // pids of tmux clients this window replaced
+
 // The claude tmux session that each terminal of this window shows: the
 // terminal's process is a client of the socket, or a client runs below it.
+// A client that started before this extension host belongs to a terminal that
+// came back from an earlier window, as after a lost connection: VS Code no
+// longer shows what that client draws, although keys still reach Claude. The
+// session gets a new terminal, and the old client detaches, so its terminal
+// ends by itself and the session keeps running.
 async function mapTmuxTerminals(tmux) {
-  const clients = tmux.clients.map((c) => ({ name: c.name, tree: ancestors(c.pid) }));
+  const clients = tmux.clients.map((c) => ({ ...c, tree: ancestors(c.pid) }));
+  const host = startTicks(process.pid);
   for (const terminal of vscode.window.terminals) {
     if (terminal.exitStatus) continue;
     const pid = await terminal.processId;
     const client = pid && clients.find((c) => c.tree.has(pid));
-    if (client) tmuxTerminals.set(terminal, client.name);
-    else tmuxTerminals.delete(terminal);
+    if (!client) {
+      tmuxTerminals.delete(terminal);
+      continue;
+    }
+    tmuxTerminals.set(terminal, client.name);
+    const start = startTicks(client.pid);
+    if (host === null || start === null || start >= host || reattachedClients.has(client.pid)) continue;
+    reattachedClients.add(client.pid);
+    attachClaudeTmux(client.name);
+    cp.execFile(agentExecutable('tmux'), ['-L', 'claude', 'detach-client', '-t', client.tty], { env: process.env }, () => {});
+    log(`claude tmux: attached ${client.name} again, its terminal came back from an earlier window`);
   }
 }
 

@@ -75,10 +75,10 @@ function fixture(t) {
   });
   const provider = new api.StatsViewProvider();
   provider.data.set(repo, { repoPath: repo, name: 'pr-7', pr: { serial: 7, status: 'wip' } });
-  // tmux list-panes and list-clients output: sessions [name, created, attached, pane pid], clients [name, pid].
+  // tmux list-panes and list-clients output: sessions [name, created, attached, pane pid], clients [name, pid, tty].
   const tmuxState = (sessions, clients = []) => fs.writeFileSync(tmuxOut, [
     ...sessions.map(([name, made, attached, pid]) => `S\t${name}\t${made}\t${attached}\t${pid}`),
-    ...clients.map(([name, pid]) => `C\t${name}\t${pid}`)].join('\n') + '\n');
+    ...clients.map(([name, pid, tty = '/dev/pts/0']) => `C\t${name}\t${pid}\t${tty}`)].join('\n') + '\n');
   const tmuxCalls = () => fs.existsSync(tmuxLog) ? fs.readFileSync(tmuxLog, 'utf8').trim().split('\n') : [];
   // A sleeping child process stands in for another claude or a tmux client.
   const child = () => {
@@ -372,6 +372,25 @@ test('closing a terminal yourself ends the tmux session it shows; a closing wind
   for (let i = 0; i < 40 && f.tmuxCalls().length === calls; i++) await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(f.tmuxCalls().slice(calls), ['-L claude kill-session -t =claude-kylie']);
   assert.deepEqual(f.logged, ['claude tmux: ended claude-kylie, its terminal was closed']);
+});
+
+test('a terminal that came back from an earlier window shows its session in a new terminal, once', async (t) => {
+  const f = fixture(t);
+  // The test runner started before this process, which stands in for the extension host.
+  const old = process.ppid, young = f.child();
+  const back = f.terminal('tmux', old), fresh = f.terminal('tmux', young);
+  f.terminals.push(back, fresh);
+  f.tmuxState([['claude-kylie', 100, 1, 999999999], ['claude-kylie-2', 101, 1, 999999998]],
+    [['claude-kylie', old, '/dev/pts/9'], ['claude-kylie-2', young, '/dev/pts/10']]);
+  await f.mapTmuxTerminals(await f.claudeTmux());
+  await f.mapTmuxTerminals(await f.claudeTmux());
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)),
+    [{ shellPath: f.tmux, shellArgs: ['-L', 'claude', 'attach-session', '-t', '=claude-kylie'] }]);
+  assert.deepEqual(f.shown, [], 'no terminal takes focus');
+  const detached = () => f.tmuxCalls().filter((c) => c.includes('detach-client'));
+  for (let i = 0; i < 40 && !detached().length; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(detached(), ['-L claude detach-client -t /dev/pts/9']);
+  assert.deepEqual(f.logged, ['claude tmux: attached claude-kylie again, its terminal came back from an earlier window']);
 });
 
 test('a terminal that opens or starts a command is scanned each second for 15 seconds', (t) => {

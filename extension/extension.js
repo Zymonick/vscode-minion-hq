@@ -1350,8 +1350,9 @@ function getHtml(nonce) {
          padding-left: calc(4px + var(--depth) * 14px); }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .twist { width: 16px; flex: none; text-align: center; opacity: .8; font-size: .8em; }
-  /* A narrow row gives way in order: labels, then conflicts and agents, then
-     the status or a file name. Header names, ↓N, controls and numbers keep
+  /* A narrow row gives way in order: origin, custom labels and file folders,
+     then conflicts and agents, then the status or a file name, then the branch
+     or CI label of a worktree. Header names, ↓N, controls and numbers keep
      their width. Each tier's flex-shrink dwarfs the next, so it empties first. */
   .name { overflow: hidden; text-overflow: ellipsis; }
   .hdr .name { font-weight: 600; flex: none; max-width: 50%; }
@@ -1359,6 +1360,8 @@ function getHtml(nonce) {
   .dim, .pr-origin, .pr-custom-label, .pr-conflicts, .agent, .prst { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .dim, .pr-origin, .pr-custom-label { flex-shrink: 1e12; }
   .pr-conflicts, .agent { flex-shrink: 1e6; }
+  .hdr .dim { flex-shrink: 1e-6; }
+  .short { display: none; }
   .dim { opacity: .6; margin-left: 7px; font-size: .9em; }
   .spacer { flex: 1; min-width: 8px; }
   .st { width: 1.4em; flex: none; text-align: center; font-weight: 600; }
@@ -1400,9 +1403,16 @@ function getHtml(nonce) {
   .prst-gone { color: var(--vscode-gitDecoration-deletedResourceForeground); }
   @media (max-width: 560px) {
     .row { padding-left: calc(4px + var(--depth) * 1ch); }
-    .cx { width: 3.9em; margin-right: 2px; }
+    .cx { width: 3em; margin-right: 2px; }
     .st { width: 1em; }
     .add, .del { width: 3em; }
+    /* Short forms give the label room: no pr- prefix, est or cx word, Codex or
+       screenshot control, and narrow gaps. */
+    .pfx, .cxl, .codex, .shots, .prst .long { display: none; }
+    .prst .short { display: inline; }
+    .dim, .prst, .pr-origin, .pr-custom-label, .pr-conflicts, .behind-n { margin-left: 3px; }
+    .claude, .agent { margin-left: 4px; }
+    .spacer { min-width: 4px; }
   }
   .prst-schema { cursor: pointer; }
   .prst-schema:hover { text-decoration: underline; }
@@ -1436,6 +1446,10 @@ const PR_STATUS_TIP = {
   gone: 'gone — CI knows this PR, but its worktree is gone',
 };
 
+// A narrow view shows these status labels short and drops the pr- prefix.
+const PR_STATUS_SHORT = { 'ready to land': 'land' };
+const PR_PREFIX = '<span class="pfx">pr-</span>';
+
 // Task state accompanies its existing case number and summary.
 // The status sits outside the dimmed label so its colour reads at full strength.
 // CI's schema blocker opens the model changes that makemigrations reads.
@@ -1446,16 +1460,19 @@ function prTag(pr, ci, repoPath) {
     ? PR_STATUS_TIP[pr.status]
     : [pr.reason || PR_STATUS_TIP[pr.status] || pr.status, ci?.checkLabel, ci?.reviewLabel,
       schema && 'Click: open the model changes after the last migration'].filter(Boolean).join('\\n');
-  const origin = pr.origin ? '<span class="pr-origin">(-&gt;pr-' + esc(pr.origin) + ')</span>' : '';
+  const origin = pr.origin ? '<span class="pr-origin">(-&gt;' + PR_PREFIX + esc(pr.origin) + ')</span>' : '';
   const custom = pr.customLabel
     ? '<span class="pr-custom-label" title="Custom label: ' + esc(pr.customLabel) + '">[' + esc(pr.customLabel) + ']</span>'
     : '';
   const conflicts = pr.status !== 'landed' && pr.conflicts && pr.conflicts.length
     ? '<span class="pr-conflicts" title="Text conflict with open PRs">conflicts ' + esc(pr.conflicts.join(', ')) + '</span>'
     : '';
+  const label = pr.statusLabel || pr.status.replace(/-/g, ' ');
+  const short = PR_STATUS_SHORT[label];
   return origin + custom + conflicts + '<span class="prst prst-' + esc(pr.status) + (schema ? ' prst-schema' : '')
     + '" title="' + esc(reason) + '"' + (schema ? ' data-schema="' + esc(repoPath) + '"' : '') + '>['
-    + esc(pr.statusLabel || pr.status.replace(/-/g, ' ')) + ']</span>';
+    + (short ? '<span class="long">' + esc(label) + '</span><span class="short">' + short + '</span>' : esc(label))
+    + ']</span>';
 }
 function isCollapsed(id, dflt) { return state.collapsed[id] !== undefined ? state.collapsed[id] : dflt; }
 function toggle(id, dflt) { state.collapsed[id] = !isCollapsed(id, dflt); vscode.setState(state); render(); }
@@ -1517,6 +1534,14 @@ function cxCell(cx, estimate) {
   tip += ' — qlty metrics, merge base vs HEAD';
   if (over) tip += '; above the agent estimate ' + signed(estimate.cx);
   return '<span class="cx ' + cls + '" title="' + esc(tip) + '"><span class="cxl">cx</span>' + signed(n) + '</span>';
+}
+
+// The dependency, estimate, cx and line columns of a branch vs master. An
+// estimate without a rating keeps an empty cx cell, so it stays in its column.
+function vsMasterCols(v, estimate) {
+  const cx = v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined;
+  return dependencyCell(v.dependencies) + estimateCell(estimate)
+    + (cx || !estimate ? cxCell(cx, estimate) : '<span class="cx"></span>') + cols(v.totals.add, v.totals.del, null, false);
 }
 
 // The agent's expected minimal cx of a PR, beside the measured one.
@@ -1675,13 +1700,13 @@ function render() {
     let behindHtml = '';
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
-      repoCols = dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
-        + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false);
+      repoCols = vsMasterCols(v, r.pr && r.pr.estimate);
       // Beside the name, not in the label, which a narrow view truncates first.
       if (v.behind) behindHtml = '<span class="behind behind-n" title="' + v.behind
         + (v.behind === 1 ? ' commit' : ' commits') + ' behind master">↓' + v.behind + '</span>';
     }
-    h += row(d, { hdr: true, twist: rc, name: esc(r.name), tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
+    const prName = r.pr && /^pr-\\d+$/.test(r.name) ? PR_PREFIX + esc(r.name.slice(3)) : esc(r.name);
+    h += row(d, { hdr: true, twist: rc, name: prName, tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
       btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|' + rd });
     if (rc) continue;
 
@@ -1710,8 +1735,7 @@ function render() {
         : 'not behind master';
       h += row(d + 1, { hdr: true, twist: vc, name: 'Vs master (' + v.files.length + ')',
         dim: behind + ' · ↑' + v.ahead,
-        cols: dependencyCell(v.dependencies) + estimateCell(r.pr && r.pr.estimate)
-          + cxCell(v.cx && (v.cx.files || v.cx.checks.files) ? v.cx : undefined, r.pr && r.pr.estimate) + cols(v.totals.add, v.totals.del, null, false),
+        cols: vsMasterCols(v, r.pr && r.pr.estimate),
         act: 't|' + vid + '|0' });
       if (!vc) h += groupedFiles(d + 2, r.repoPath, 'vsmaster', v.files,
         (depth, f) => fileRow(depth, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,

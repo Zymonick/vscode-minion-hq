@@ -50,12 +50,18 @@ narrow view never truncates it. A row not behind shows nothing.
 ## Narrow view
 
 A row that does not fit truncates its parts with an ellipsis in this order:
-the branch or CI label, the origin and custom labels, the conflicts and agent
-markers, then the task status marker or a file name. Section and worktree
-names, up to half the row, `↓N`, the Claude, Codex and screenshot controls,
-and the number columns keep their full width. Below 560 px each indent level
-is one character wide, and the number columns become narrower and stay
-aligned across rows.
+the origin and custom labels and a file's folder, the conflicts and agent
+markers, the task status marker or a file name, then the branch or CI label of
+a worktree row. Section and worktree names, up to half the row, `↓N`, the
+Claude, Codex and screenshot controls, and the number columns keep their full
+width.
+
+Below 560 px each indent level is one character wide, and the gaps between
+the parts of a row are narrower. PR rows show their number without `pr-`, also
+in the origin marker, and `ready to land` as `land`. PR rows hide the Codex and
+screenshot controls. The number columns drop the `est` and `cx` words, become
+narrower and stay aligned across rows; an estimate without a measured `cx`
+keeps an empty `cx` column.
 
 ## File groups
 
@@ -368,6 +374,7 @@ commands that named `ci land` when `/land` opened a PowerShell window:
 ## Codex per PR
 
 Every PR row also carries one small Codex terminal icon with a Codex tooltip,
+except in a [narrow view](#narrow-view),
 opening the interactive CLI in a VS Code terminal. Leave its name unset so
 Codex's live title shows its activity indicator, including work and requests
 for input. Set `tui.terminal_title` for this CLI invocation to `activity` followed
@@ -410,8 +417,9 @@ and never toggle the PR row when the control is clicked.
 
 ## Screenshots per PR
 
-A PR row carries a picture control when `kylie-shots/PR_N` beside the worktrees
-folder, or one of its direct subfolders, holds a PNG, WebP, JPEG or GIF image.
+Outside a [narrow view](#narrow-view), a PR row carries a picture control
+when `kylie-shots/PR_N` beside the worktrees folder, or one of its direct
+subfolders, holds a PNG, WebP, JPEG or GIF image.
 Its tooltip gives the image count and the `taken` time of `shots.json`, when
 present. Detect the set within the existing repository scan; add no polling.
 

@@ -167,7 +167,8 @@ test('rendered rows show one task marker with check, review and action details',
       pr: { serial: 7, status: state, statusLabel: label, label: 'Requested change', reason: 'Agent: record <review>' },
       ci: { serial: 7, state, checkLabel: 'Checks passed', reviewLabel: 'Agent review current' },
     }] } });
-    assert.ok(root.innerHTML.includes('[' + label + ']'));
+    assert.ok(root.innerHTML.includes(state === 'ready-to-land'
+      ? '[<span class="long">ready to land</span><span class="short">land</span>]' : '[' + label + ']'));
     const visible = root.innerHTML.replace(/<[^>]*>/g, '');
     assert.ok(!visible.includes('Checks passed'), 'check details must not form a second visible status');
     const markers = [...root.innerHTML.matchAll(/<span class="prst [^"]+" title="([^"]*)">/g)];
@@ -210,8 +211,11 @@ test('manual labels render separately before readiness and retain its actions', 
     }] } });
     const custom = '[Prüfung &lt;tomorrow&gt; &amp; &quot;later&quot;]';
     assert.ok(root.innerHTML.includes(custom));
-    assert.ok(root.innerHTML.includes('[' + status + ']'));
-    assert.ok(root.innerHTML.indexOf(custom) < root.innerHTML.indexOf('[' + status + ']'));
+    const shown = status === 'ready to land'
+      ? '[<span class="long">ready to land</span><span class="short">land</span>]' : '[' + status + ']';
+    assert.ok(root.innerHTML.includes(shown));
+    assert.ok(root.innerHTML.indexOf(custom) < root.innerHTML.indexOf(shown));
+    assert.ok(root.innerHTML.includes('<span class="name"><span class="pfx">pr-</span>7</span>'));
     assert.equal([...root.innerHTML.matchAll(/<span class="pr-custom-label"/g)].length, 1);
     assert.equal([...root.innerHTML.matchAll(/<span class="prst /g)].length, 1);
     assert.ok(root.innerHTML.includes(status === 'ready to land' ? f.report.next : 'Concrete next action'));
@@ -263,7 +267,7 @@ test('a recorded origin PR renders before the custom label', async (t) => {
       staged: [], unstaged: [], untracked: [], commits: [], pr, ci,
     }] } });
     if (origin) {
-      assert.match(root.innerHTML, /<span class="pr-origin">\(-&gt;pr-5\)<\/span><span class="pr-custom-label"/);
+      assert.match(root.innerHTML, /<span class="pr-origin">\(-&gt;<span class="pfx">pr-<\/span>5\)<\/span><span class="pr-custom-label"/);
     } else {
       assert.doesNotMatch(root.innerHTML, /pr-origin">/);
     }

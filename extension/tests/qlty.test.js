@@ -296,6 +296,11 @@ test('the agent estimate stands before the measured cx in collapsed and Vs maste
   assert.doesNotMatch(renderComplexity([
     { f: { path: 'views.py' }, head: { complex: 3, cyclo: 3 }, base: null },
   ], true, { serial: 7, label: 'pr-7', status: 'wip', estimate: null }), /cx-estimate/);
+  for (const collapsed of [false, true]) {
+    assert.match(renderComplexity([
+      { f: { path: 'README.md' }, head: null, base: null },
+    ], collapsed, { serial: 7, label: 'pr-7', status: 'wip', estimate }), /\+4<\/span><span class="cx"><\/span>/);
+  }
 });
 
 test('a measured cx above the agent estimate turns red; at or below it keeps its color', () => {

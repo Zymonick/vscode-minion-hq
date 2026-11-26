@@ -164,7 +164,7 @@ test('PR rows sit under one header per group, Kylie first and rows without a gro
   assert.doesNotMatch(v.root.innerHTML, /data-act="t\|p\|/);
 });
 
-test('a narrow row truncates labels before markers and keeps names, controls and numbers', () => {
+test('a narrow row truncates markers before the worktree label and keeps names, controls and numbers', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   const { getHtml } = vm.runInNewContext(source + '\n({ getHtml });', {
     module: { exports: {} }, process, Buffer,
@@ -189,6 +189,13 @@ test('a narrow row truncates labels before markers and keeps names, controls and
   }
   for (const marker of ['.pr-conflicts', '.agent']) assert.ok(shrink(marker) >= 1e6 * shrink('.prst'), marker);
   assert.ok(shrink('.dim') >= 1e6 * shrink('.name'));
+  assert.ok(shrink('.prst') >= 1e6 * shrink('.hdr .dim'));
+  assert.ok(shrink('.hdr .dim') > 0);
   assert.match(css, /\.row \{[^}]*padding-left: calc\(4px \+ var\(--depth\) \* 14px\)/);
-  assert.match(css, /@media \(max-width: 560px\) \{\s*\.row \{ padding-left: calc\(4px \+ var\(--depth\) \* 1ch\); \}/);
+  assert.match(css, /\n  \.short \{ display: none; \}/);
+  assert.doesNotMatch(css.slice(0, css.indexOf('@media')), /\.pfx/);
+  const narrow = css.slice(css.indexOf('@media (max-width: 560px)'));
+  assert.match(narrow, /^@media \(max-width: 560px\) \{\s*\.row \{ padding-left: calc\(4px \+ var\(--depth\) \* 1ch\); \}/);
+  assert.match(narrow, /\.pfx, \.cxl, \.codex, \.shots, \.prst \.long \{ display: none; \}/);
+  assert.match(narrow, /\.prst \.short \{ display: inline; \}/);
 });

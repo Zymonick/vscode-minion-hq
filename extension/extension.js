@@ -2966,6 +2966,17 @@ class StatsViewProvider {
 // reports no title change to extensions, so a visible list compares its rows
 // each second.
 const TERMINAL_NAMES_MS = 1000;
+// The fields of a tmux pane that a row shows; the title comes last, as it may hold tabs.
+const TMUX_PANE_FORMAT = '#{session_name}\t#{pane_id}\t#{window_active}#{pane_active}\t#{pane_current_path}\t#{pane_title}';
+
+// The tmux pane that a tmux client attaches, from its command line: the socket
+// arguments before the command and the target, or null for another process.
+function tmuxAttachOf(argv) {
+  if (path.basename(argv[0] || '') !== 'tmux') return null;
+  const at = argv.findIndex((a) => a === 'attach-session' || a === 'attach');
+  const t = argv.indexOf('-t', at);
+  return at > 0 && t > at && argv[t + 1] ? { socket: argv.slice(1, at), target: argv[t + 1] } : null;
+}
 // A title that starts with a busy glyph, such as Claude's ◐ while it works.
 const TERMINAL_BUSY = /^[◐-◓⠀-⣿]/;
 // The tab list's actions that VS Code runs on the active terminal.
@@ -2986,6 +2997,9 @@ class TerminalList {
     this.onDidChangeTreeData = this.emitter.event;
     this.drawn = new WeakMap(); // what each terminal's row shows
     this.pids = new WeakMap();
+    this.attaches = new WeakMap(); // the tmux pane that a terminal's own process attaches, or null
+    this.panes = new Map(); // socket arguments + '\n' + target → { title, cwd }
+    this.reading = false;
     this.ids = new WeakMap();
     this.count = 0;
     this.view = null;
@@ -3000,16 +3014,74 @@ class TerminalList {
     return undefined;
   }
 
-  // A row shows the terminal's name, or its process name when the name is
-  // empty, and the folder its process runs in, like the tab list.
-  look(terminal) {
+  // The tmux pane that a terminal shows: the claude tmux session that the agent
+  // scan found below its process, or the pane that its own process attaches on
+  // any socket, as after VS Code restored it. Null for another terminal.
+  paneOf(terminal) {
+    const session = tmuxTerminals.get(terminal);
+    if (session) return { socket: ['-L', 'claude'], target: '=' + session };
     const pid = this.pids.get(terminal);
-    let label = terminal.name, cwd = '';
+    if (!pid) return null;
+    if (!this.attaches.has(terminal)) {
+      let argv = [];
+      try { argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean); } catch {}
+      this.attaches.set(terminal, tmuxAttachOf(argv));
+    }
+    return this.attaches.get(terminal);
+  }
+
+  // A row of a terminal that shows a tmux pane shows the pane's title and
+  // folder: VS Code names a terminal that it restored after its process, or
+  // not at all, until a title with «Claude Code» arrives, and a tmux server
+  // without set-titles sends no title. Another row shows the terminal's name,
+  // or its process name when the name is empty, and the folder its process
+  // runs in, like the tab list.
+  look(terminal) {
+    const shown = this.paneOf(terminal);
+    const pane = shown && this.panes.get(shown.socket.join(' ') + '\n' + shown.target);
+    const pid = this.pids.get(terminal);
+    let label = (pane && pane.title) || terminal.name, cwd = (pane && pane.cwd) || '';
     if (pid) {
-      try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
+      if (!cwd) try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
       if (!label) try { label = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim(); } catch {}
     }
-    return { label: label || 'terminal', cwd, busy: TERMINAL_BUSY.test(terminal.name) };
+    return { label: label || 'terminal', cwd, busy: TERMINAL_BUSY.test(label) };
+  }
+
+  // Read the panes of each tmux socket that a row shows, with one tmux call
+  // per socket, then redraw the changed rows. A read that still runs skips
+  // the next one.
+  readPanes() {
+    const sockets = new Map();
+    for (const terminal of vscode.window.terminals) {
+      const shown = this.paneOf(terminal);
+      if (shown) sockets.set(shown.socket.join(' '), shown.socket);
+    }
+    const tmux = agentExecutable('tmux');
+    if (!sockets.size || !tmux || this.reading) return;
+    this.reading = true;
+    const panes = new Map();
+    let left = sockets.size;
+    for (const [key, socket] of sockets) {
+      cp.execFile(tmux, [...socket, 'list-panes', '-a', '-F', TMUX_PANE_FORMAT], { env: process.env, timeout: 3000 }, (err, stdout) => {
+        for (const line of err ? [] : stdout.split('\n')) {
+          const [session, id, active, cwd, ...title] = line.split('\t');
+          if (!id) continue;
+          const pane = { title: title.join('\t'), cwd };
+          panes.set(key + '\n' + id, pane);
+          if (active === '11') panes.set(key + '\n' + session, pane).set(key + '\n=' + session, pane);
+        }
+        if (--left) return;
+        this.panes = panes;
+        this.reading = false;
+        this.compareNames();
+      });
+    }
+  }
+
+  tick() {
+    this.compareNames();
+    this.readPanes();
   }
 
   getTreeItem(terminal) {
@@ -3079,8 +3151,8 @@ class TerminalList {
       clearInterval(this.timer);
       this.timer = null;
       if (!view.visible) return;
-      this.compareNames();
-      this.timer = setInterval(() => this.compareNames(), TERMINAL_NAMES_MS);
+      this.tick();
+      this.timer = setInterval(() => this.tick(), TERMINAL_NAMES_MS);
       this.selectActive();
     };
     visibility();

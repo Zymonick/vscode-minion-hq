@@ -335,7 +335,16 @@ The `Terminals` view below Minion HQ lists every terminal of the window, also
 plain shells, in the order VS Code gives extensions: the order in which the
 terminals opened. Each row shows the terminal's live name, or the name of its
 process when the name is empty, and as description the folder its process runs
-in, read from `/proc`. A name that starts with a busy glyph (`◐`–`◓` or a
+in, read from `/proc`. A row whose terminal shows a tmux pane shows the pane's
+title and, as description, the pane's folder instead: VS Code names a terminal
+that it restored after its process, or not at all, until a title with «Claude
+Code» arrives, and a tmux server without `set-titles` sends no title. Such a
+terminal is a claude tmux session that the agent scan finds below the
+terminal's process, or a pane that the terminal's own process attaches with
+`tmux attach-session` on any socket, read from its `/proc` command line. A
+visible view reads these panes with one `tmux list-panes -a` for each socket
+each second; a read that still runs skips the next one. A label that starts
+with a busy glyph (`◐`–`◓` or a
 Braille spinner) gets a spinning icon, other rows a terminal icon. A click
 shows the terminal and gives it focus. While the view is visible, the row of
 the active terminal is selected without focus; a hidden view never opens

@@ -47,8 +47,10 @@ function fixture(t) {
     JSON.stringify({ pid, sessionId, cwd: workspace, procStart: start, entrypoint: 'cli' }));
 
   const created = [], shown = [], infos = [], errors = [], logged = [];
+  const sent = [];
   const terminal = (name, pid, exitStatus) => ({ name, exitStatus, creationOptions: { name },
-    processId: Promise.resolve(pid), show() { shown.push(this.name + (pid ? ' @' + pid : '')); } });
+    processId: Promise.resolve(pid), show(preserveFocus) { shown.push(this.name + (pid ? ' @' + pid : '') + (preserveFocus ? ' (no focus)' : '')); },
+    sendText(text) { sent.push(`${this.name}: ${text}`); } });
   const vscode = {
     window: {
       terminals: [],
@@ -66,7 +68,7 @@ function fixture(t) {
     TerminalExitReason: { Unknown: 0, Shutdown: 1, Process: 2, User: 3, Extension: 4 },
   };
   const env = { ...process.env, HOME: home, PATH: bin };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, claudeSessions, nextRestoreRecord, restoreClaudeSessions, claudeSessionWatch, attachBackgroundSessions, claudeTmux, claimRestore, readRestoreRecord, writeRestoreRecord, mapTmuxTerminals, closeClaudeTmux });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, claudeSessions, nextRestoreRecord, restoreClaudeSessions, openShellTerminals, claudeSessionWatch, attachBackgroundSessions, claudeTmux, claimRestore, readRestoreRecord, writeRestoreRecord, mapTmuxTerminals, closeClaudeTmux });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout, setInterval, clearInterval,
     process: Object.assign(Object.create(process), { env }),
     require: (name) => name === 'vscode' ? vscode : require(name),
@@ -85,7 +87,7 @@ function fixture(t) {
     return proc.pid;
   };
   return { ...api, provider, repo, workspace, claude, tmux, env, sessions, session, live, terminal,
-    tmuxState, tmuxCalls, child, terminals: vscode.window.terminals, created, shown, infos, errors, logged,
+    tmuxState, tmuxCalls, child, terminals: vscode.window.terminals, created, shown, sent, infos, errors, logged,
     click: () => provider.onMessage({ type: 'claude', repoPath: repo }) };
 }
 
@@ -338,6 +340,19 @@ test('recorded sessions are attached in tmux or resume in their folder, in recor
   f.logged.length = 0;
   f.restoreClaudeSessions([], { sessions: [], clients: [] });
   assert.deepEqual(f.logged, ['claude restore: nothing recorded']);
+});
+
+test('the restoring window opens bash local and bash prd first, once each', (t) => {
+  const f = fixture(t);
+  f.openShellTerminals();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'bash local' }, { name: 'bash prd' }]);
+  assert.deepEqual(f.sent, ['bash prd: ssh prd']);
+  assert.deepEqual(f.shown, ['bash local (no focus)'], 'the local shell shows the panel without focus');
+  assert.deepEqual(f.logged, ['shell restore: opened bash local', 'shell restore: opened bash prd']);
+  f.created.length = 0;
+  f.terminals.push(f.terminal('bash prd'));
+  f.openShellTerminals();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'bash local' }], 'a reconnected shell is kept');
 });
 
 test('closing a terminal yourself ends the tmux session it shows; a closing window does not', async (t) => {

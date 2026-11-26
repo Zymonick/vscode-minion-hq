@@ -2108,6 +2108,21 @@ function attachClaudeTmux(name) {
   return terminal;
 }
 
+// The plain shells that lead the terminal list of the restoring window.
+const SHELL_TERMINALS = [{ name: 'bash local' }, { name: 'bash prd', command: 'ssh prd' }];
+
+// Each shell that no terminal of this window has by name opens in the default
+// profile and runs its command; the local one shows the panel without focus.
+function openShellTerminals() {
+  for (const shell of SHELL_TERMINALS) {
+    if (vscode.window.terminals.some((t) => t.name === shell.name)) continue;
+    const terminal = vscode.window.createTerminal({ name: shell.name });
+    if (shell.command) terminal.sendText(shell.command);
+    else terminal.show(true);
+    log(`shell restore: opened ${shell.name}`);
+  }
+}
+
 // A terminal that starts claude in an interactive shell, whose claude function
 // decides where the session runs.
 function claudeTerminal(cwd, args, env) {
@@ -2883,8 +2898,10 @@ function activate(context) {
   // Until a scan writes the host's record, the record of this workspace stands in.
   const restore = readRestoreRecord() || context.workspaceState.get(RESTORE_KEY, []);
   claudeTmux().then((tmux) => {
-    if (claimRestore()) restoreClaudeSessions(restore, tmux);
-    else log('claude restore: another window restores');
+    if (claimRestore()) {
+      openShellTerminals();
+      restoreClaudeSessions(restore, tmux);
+    } else log('claude restore: another window restores');
   });
   const attached = new Set(), activated = Date.now();
   const absent = new Map();

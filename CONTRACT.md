@@ -269,7 +269,13 @@ Claude sessions:
 - Closing a terminal yourself ends the tmux session that it shows. A terminal
   that ends because the window closes or opens another folder leaves its
   session running.
-- Plain shells and Codex terminals are not restored.
+- Before it restores Claude sessions, the restoring window opens the shells
+  `bash local` and `bash prd` in the default profile, so both lead the
+  terminal list. `bash prd` runs `ssh prd`; `bash local` shows the panel
+  without focus. A shell that a terminal of the window has by name stays as it
+  is. The Machine setting `terminal.integrated.hideOnStartup` `whenEmpty` of
+  business-operations `agent-config` stops VS Code's own default terminal
+  ahead of them. Other plain shells and Codex terminals are not restored.
 - The `Minion HQ` output channel logs each change of the record and, at
   activation, each session attached, resumed or not resumed with the reason.
 

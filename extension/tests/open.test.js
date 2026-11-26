@@ -53,6 +53,8 @@ function harness(childProcess = cp) {
     },
     window: {
       tabGroups: { all: groups },
+      terminals: [],
+      createTerminal: () => ({ show() {}, sendText() {} }),
       createOutputChannel: () => ({ appendLine() {} }),
       onDidOpenTerminal: disposable,
       onDidCloseTerminal: disposable,

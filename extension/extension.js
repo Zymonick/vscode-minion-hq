@@ -1638,7 +1638,8 @@ function render() {
     if (key !== null && isCollapsed('p|' + key, false)) continue;
     const d = key === null ? 0 : 1; // rows under a group header indent one level
     const rid = 'r|' + r.repoPath;
-    const rc = isCollapsed(rid, false);
+    const rd = r.pr ? 1 : 0; // a PR row starts collapsed until it is toggled
+    const rc = isCollapsed(rid, rd === 1);
     const t = r.totals;
     const ag = agents[r.repoPath] || [];
     let agentHtml = '';
@@ -1681,7 +1682,7 @@ function render() {
         + (v.behind === 1 ? ' commit' : ' commits') + ' behind master">↓' + v.behind + '</span>';
     }
     h += row(d, { hdr: true, twist: rc, name: esc(r.name), tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
-      btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|0' });
+      btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|' + rd });
     if (rc) continue;
 
     // A branch lists uncommitted work inside Vs master instead.

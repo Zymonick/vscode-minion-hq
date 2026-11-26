@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.63",
+  "version": "0.13.64",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {

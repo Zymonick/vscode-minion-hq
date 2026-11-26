@@ -105,6 +105,18 @@ test('a collapsed worktree shows its behind count beside the name, outside the t
   assert.match(v.root.innerHTML, /↓3 behind master/);
 });
 
+test('a new PR row starts collapsed and other rows start open', () => {
+  const v = view();
+  v.send({ type: 'data', repos: [{ ...repo('/kylie'), name: 'kylie' }, { ...repo('/pr-9'), name: 'pr-9', pr: { serial: 9 } }] });
+  assert.match(v.root.innerHTML, /data-act="t\|r\|\/kylie\|0"><span class="twist">▾/);
+  assert.match(v.root.innerHTML, /data-act="t\|r\|\/pr-9\|1"><span class="twist">▸/);
+  assert.doesNotMatch(v.root.innerHTML, /data-act="t\|s\|\/pr-9\|/);
+  const click = (act) => v.events.click({ target: { closest: (s) => s === '.row' ? { dataset: { act } } : null } });
+  click('t|r|/pr-9|1');
+  assert.equal(v.saved().collapsed['r|/pr-9'], false);
+  assert.match(v.root.innerHTML, /data-act="t\|s\|\/pr-9\|vsmaster\|0"/);
+});
+
 test('opening a worktree also opens its Vs master section', () => {
   const v = view();
   v.send({ type: 'data', repos: [repo('/a')] });

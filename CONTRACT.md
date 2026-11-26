@@ -29,7 +29,8 @@ message above its rows and keeps its layout during refreshes.
 
 ## Expansion
 
-Opening a worktree row also opens its Vs master section, whatever state that
+A `pr-N` worktree row starts collapsed until the user opens it; other rows start
+open. Opening a worktree row also opens its Vs master section, whatever state that
 section was left in. Collapse All and Expand All set every worktree, section,
 and commit at once; expanded commits load their files once.
 

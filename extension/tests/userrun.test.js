@@ -57,7 +57,7 @@ test('a land request runs at once in an unfocused terminal of the Kylie checkout
   assert.deepEqual(f.asked, [], 'land asks nothing');
   const base = path.join(f.root, 'land-1700');
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{
-    name: 'ci land 1260 --notest', cwd: f.kylie, shellPath: '/bin/bash',
+    name: 'ci land 1260 --notest', cwd: f.kylie, shellPath: '/bin/bash', isTransient: true,
     shellArgs: ['-o', 'pipefail', '-lc', `${f.kylie}/scripts/ci land 1260 --notest 2>&1 | tee ${base}.log` +
       ` && echo 0 > ${base}.rc || echo $? > ${base}.rc`],
   }]);

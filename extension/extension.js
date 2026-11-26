@@ -2047,6 +2047,8 @@ const RESTORE_KEY = 'claudeTerminalSessions'; // the workspace record of Minion 
 const RESTORE_GRACE_MS = 30000;
 const RESTORE_CLAIM_MS = 10000;
 const RESTORE_WATCH_S = 15;
+const RESTORE_SETTLE_MS = 2000;
+const RESTORE_SETTLE_MAX_MS = 10000;
 const NO_TMUX = { sessions: [], clients: [] };
 const tmuxTerminals = new WeakMap(); // terminal → the claude tmux session it shows
 
@@ -2101,25 +2103,35 @@ function claudeTmux() {
   }));
 }
 
+// The folder in which a terminal that shows the claude tmux session name
+// waits (business-operations agent-config shell/claude.sh). VS Code restores a
+// terminal in the folder of its process, so the restored terminal attaches
+// the same session at its old tab place.
+const tmuxMarks = () => path.join(process.env.HOME || '', '.local', 'state', 'claude-tmux');
+
 // A terminal that shows the claude tmux session name.
 function attachClaudeTmux(name) {
-  const terminal = vscode.window.createTerminal({ shellPath: agentExecutable('tmux'),
+  const cwd = path.join(tmuxMarks(), name);
+  try { fs.mkdirSync(cwd, { recursive: true }); } catch { /* the terminal then opens in the workspace */ }
+  const terminal = vscode.window.createTerminal({ cwd, shellPath: agentExecutable('tmux'),
     shellArgs: ['-L', 'claude', 'attach-session', '-t', '=' + name] });
   tmuxTerminals.set(terminal, name);
   return terminal;
 }
 
-// The plain shells that lead the terminal list of the restoring window.
-const SHELL_TERMINALS = [{ name: 'bash local' }, { name: 'bash prd', command: 'ssh prd' }];
+// The plain shells that lead the terminal list of the restoring window. The
+// prd shell starts ssh itself, so a terminal that VS Code restores connects
+// again; after ssh it is a local shell.
+const SHELL_TERMINALS = [{ name: 'bash local' },
+  { name: 'bash prd', shellPath: '/bin/bash', shellArgs: ['-ic', 'ssh prd; exec bash'] }];
 
-// Each shell that no terminal of this window has by name opens in the default
-// profile and runs its command; the local one shows the panel without focus.
+// Each shell that no terminal of this window has by name opens; the local one
+// opens in the default profile and shows the panel without focus.
 function openShellTerminals() {
   for (const shell of SHELL_TERMINALS) {
     if (vscode.window.terminals.some((t) => t.name === shell.name)) continue;
-    const terminal = vscode.window.createTerminal({ name: shell.name });
-    if (shell.command) terminal.sendText(shell.command);
-    else terminal.show(true);
+    const terminal = vscode.window.createTerminal(shell);
+    if (!shell.shellPath) terminal.show(true);
     log(`shell restore: opened ${shell.name}`);
   }
 }
@@ -2137,14 +2149,18 @@ function startTicks(pid) {
 }
 
 const reattachedClients = new Set(); // pids of tmux clients this window replaced
+const CLOCK_TICKS = 100; // USER_HZ of Linux: the unit of process start times
+const REATTACH_AGE_S = 30;
 
 // The claude tmux session that each terminal of this window shows: the
 // terminal's process is a client of the socket, or a client runs below it.
-// A client that started before this extension host belongs to a terminal that
-// came back from an earlier window, as after a lost connection: VS Code no
-// longer shows what that client draws, although keys still reach Claude. The
-// session gets a new terminal, and the old client detaches, so its terminal
-// ends by itself and the session keeps running.
+// A client that started REATTACH_AGE_S or more before this extension host
+// belongs to a terminal that came back from an earlier window, as after a lost
+// connection: VS Code no longer shows what that client draws, although keys
+// still reach Claude. The session gets a new terminal, and the old client
+// detaches, so its terminal ends by itself and the session keeps running. A
+// terminal that VS Code restores at the window start runs a new client, which
+// stays.
 async function mapTmuxTerminals(tmux) {
   const clients = tmux.clients.map((c) => ({ ...c, tree: ancestors(c.pid) }));
   const host = startTicks(process.pid);
@@ -2158,7 +2174,8 @@ async function mapTmuxTerminals(tmux) {
     }
     tmuxTerminals.set(terminal, client.name);
     const start = startTicks(client.pid);
-    if (host === null || start === null || start >= host || reattachedClients.has(client.pid)) continue;
+    if (host === null || start === null || host - start < REATTACH_AGE_S * CLOCK_TICKS
+      || reattachedClients.has(client.pid)) continue;
     reattachedClients.add(client.pid);
     attachClaudeTmux(client.name);
     cp.execFile(agentExecutable('tmux'), ['-L', 'claude', 'detach-client', '-t', client.tty], { env: process.env }, () => {});
@@ -2246,11 +2263,40 @@ function nextRestoreRecord(recorded, live, absent, now, shown = []) {
   return next;
 }
 
-// In record order, each session in a tmux session that no client shows is
-// attached, and each session that no longer runs resumes in its folder. Then
-// the other tmux sessions that no client shows are attached, in start order.
-// No terminal takes focus.
-function restoreClaudeSessions(recorded, tmux) {
+// The claude tmux sessions in whose folder (tmuxMarks) a terminal of this
+// window waits: VS Code restored the terminal, and its shell attaches the
+// session.
+async function markedTmuxSessions() {
+  const names = new Set();
+  for (const terminal of vscode.window.terminals) {
+    if (terminal.exitStatus) continue;
+    const pid = await terminal.processId;
+    let cwd;
+    try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch { continue; }
+    if (path.dirname(cwd) === tmuxMarks()) names.add(path.basename(cwd));
+  }
+  return names;
+}
+
+// VS Code restores the terminals of the window while the window starts: this
+// resolves when no terminal has opened for RESTORE_SETTLE_MS, at the latest
+// RESTORE_SETTLE_MAX_MS after the call.
+function terminalsSettled(quiet = RESTORE_SETTLE_MS, max = RESTORE_SETTLE_MAX_MS) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const done = () => { clearTimeout(timer); clearTimeout(limit); opened.dispose(); resolve(); };
+    const wait = () => { clearTimeout(timer); timer = setTimeout(done, quiet); };
+    const opened = vscode.window.onDidOpenTerminal(wait);
+    const limit = setTimeout(done, max);
+    wait();
+  });
+}
+
+// In record order, each session in a tmux session that no client shows and no
+// restored terminal holds (marked) is attached, and each session that no longer
+// runs resumes in its folder. Then the other such tmux sessions are attached,
+// in start order. No terminal takes focus.
+function restoreClaudeSessions(recorded, tmux, marked = new Set()) {
   const panes = new Map();
   for (const s of tmux.sessions) {
     const session = claudeRecord(s.pid);
@@ -2265,7 +2311,7 @@ function restoreClaudeSessions(recorded, tmux) {
   const projects = path.join(process.env.HOME || '', '.claude', 'projects');
   for (const session of recorded) {
     const pane = panes.get(session.id);
-    if (pane && !pane.attached) {
+    if (pane && !pane.attached && !marked.has(pane.name)) {
       attach(pane);
       continue;
     }
@@ -2280,7 +2326,8 @@ function restoreClaudeSessions(recorded, tmux) {
     claudeTerminal(session.cwd, ['--resume', session.id]);
     log(`claude restore: resumed ${session.id} in ${session.cwd}`);
   }
-  const rest = tmux.sessions.filter((s) => !s.attached && !attached.has(s.name)).sort((a, b) => a.created - b.created);
+  const rest = tmux.sessions.filter((s) => !s.attached && !attached.has(s.name) && !marked.has(s.name))
+    .sort((a, b) => a.created - b.created);
   rest.forEach(attach);
   if (!recorded.length && !rest.length) log('claude restore: nothing recorded');
 }
@@ -2378,7 +2425,8 @@ async function runUserRequest(request, kylie = KYLIE) {
     } catch (error) { log(`user run: ${error.message}`); }
     return log(`user run: ${command} not approved`);
   }
-  vscode.window.createTerminal({ name: command, cwd: kylie, shellPath: '/bin/bash',
+  // isTransient: VS Code never restores the terminal, so the command never runs twice.
+  vscode.window.createTerminal({ name: command, cwd: kylie, shellPath: '/bin/bash', isTransient: true,
     shellArgs: ['-o', 'pipefail', '-lc', userRunLine(request, kylie)] });
   log(`user run: started ${command}`);
 }
@@ -2516,7 +2564,8 @@ async function openCodex(repo) {
     const title = session ? 'thread-title' : 'current-dir';
     const args = ['--remote', 'unix://', '--approve-for-me',
       '-c', `tui.terminal_title=["activity","${title}"]`];
-    const options = { cwd: session ? session.cwd : repo.repoPath,
+    // isTransient: VS Code does not restore Codex terminals, which need the app server.
+    const options = { cwd: session ? session.cwd : repo.repoPath, isTransient: true,
       env: { MINION_HQ_CODEX_PR: repo.repoPath },
       shellPath: executable, shellArgs: session ? ['resume', ...args, session.id] : args };
     if (session) {
@@ -2929,12 +2978,15 @@ function activate(context) {
 
   // Until a scan writes the host's record, the record of this workspace stands in.
   const restore = readRestoreRecord() || context.workspaceState.get(RESTORE_KEY, []);
-  claudeTmux().then((tmux) => {
-    if (claimRestore()) {
+  if (claimRestore()) {
+    terminalsSettled().then(async () => {
+      const tmux = await claudeTmux();
+      const marked = await markedTmuxSessions();
+      for (const name of marked) log(`claude restore: ${name} is in a terminal that VS Code restored`);
       openShellTerminals();
-      restoreClaudeSessions(restore, tmux);
-    } else log('claude restore: another window restores');
-  });
+      restoreClaudeSessions(restore, tmux, marked);
+    });
+  } else log('claude restore: another window restores');
   const attached = new Set(), activated = Date.now();
   const absent = new Map();
   let recording = false;

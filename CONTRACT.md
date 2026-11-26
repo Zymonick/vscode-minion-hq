@@ -239,7 +239,22 @@ Over SSH, the shell function `claude` of business-operations
 session on the socket `claude`. Such a session keeps running when its
 terminal, the window or the SSH connection ends. Elsewhere, quitting VS Code
 ends every terminal. At its next start, the window brings back the same
-Claude sessions:
+Claude sessions at their tab places:
+
+- The Machine setting `terminal.integrated.persistentSessionReviveProcess`
+  `onExitAndWindowClose` of business-operations `agent-config` makes VS Code
+  restore each terminal at its tab place, also a tab moved by hand. VS Code
+  runs the terminal's start command again, in the folder that the terminal's
+  process had when the window closed.
+- A terminal that shows a tmux session waits in the folder
+  `~/.local/state/claude-tmux/<session>`: the `claude` function changes to it
+  before it attaches, and Minion HQ opens its attach terminals in it. A shell
+  that starts in such a folder attaches the session when no client shows it
+  and closes after it, and closes at once when the session has ended. When a
+  client shows the session, as in a split of its terminal, the shell stays
+  open in the session's folder.
+- VS Code does not restore the terminals of user-run commands and of Codex
+  (`isTransient`), so a command never runs twice.
 
 - Minion HQ starts Claude through that function: `/bin/bash -ic` with the
   `claude` command line, also for the Claude control of a PR row.
@@ -251,9 +266,8 @@ Claude sessions:
   session started in. The id comes from Claude's session record with a
   matching process start time. Entries keep their order; new ones come last.
   The sessions that the window's terminals show then take their places in the
-  record in terminal order, so the next start opens them in that order. VS
-  Code tells extensions the order in which terminals opened, not a tab moved
-  by hand, so a moved tab returns at its earlier place.
+  record in terminal order: the order in which the terminals opened. VS Code
+  tells extensions nothing about a tab moved by hand.
   A window that opens another folder keeps the record. Until a scan writes the
   file, the workspace record of Minion HQ 0.13.59 and earlier stands in.
 - For 15 seconds after a terminal opens or a command starts in a terminal, the
@@ -263,8 +277,11 @@ Claude sessions:
   A closing window ends the extension host first, so its sessions stay recorded.
 - At activation, the first window of the host restores. A window that
   activates within 10 seconds while that window's extension host runs does
-  not. In record order, a session in a tmux session that no client shows gets
-  a new terminal that attaches to it. A session that no longer runs resumes
+  not. The restore starts when no terminal has opened for 2 seconds, at the
+  latest 10 seconds after activation, so VS Code has restored its terminals.
+  A session in whose folder a terminal of the window waits stays with that
+  terminal. In record order, each other session in a tmux session that no
+  client shows gets a new terminal that attaches to it. A session that no longer runs resumes
   with `claude --resume <id>` in its folder. A session that runs elsewhere, or
   one without its transcript, does neither. Then each other tmux session of
   the socket that no client shows is attached, in start order. No terminal
@@ -274,19 +291,22 @@ Claude sessions:
 - Closing a terminal yourself ends the tmux session that it shows. A terminal
   that ends because the window closes or opens another folder leaves its
   session running.
-- A terminal whose tmux client started before the window's extension host came
-  back from an earlier window, as after a lost connection. VS Code then shows
+- A terminal whose tmux client started 30 seconds or more before the window's
+  extension host came back from an earlier window, as after a lost connection.
+  A terminal that VS Code restores at the window start runs a new client. VS Code then shows
   nothing that the client draws, although keys still reach Claude. The agent
   scan attaches that session in a new terminal without focus and detaches the
   old client once, so the old terminal ends by itself and the session keeps
   running. The `Minion HQ` output channel logs each such session.
 - Before it restores Claude sessions, the restoring window opens the shells
-  `bash local` and `bash prd` in the default profile, so both lead the
-  terminal list. `bash prd` runs `ssh prd`; `bash local` shows the panel
-  without focus. A shell that a terminal of the window has by name stays as it
-  is. The Machine setting `terminal.integrated.hideOnStartup` `whenEmpty` of
-  business-operations `agent-config` stops VS Code's own default terminal
-  ahead of them. Other plain shells and Codex terminals are not restored.
+  `bash local` and `bash prd`, so both lead the terminal list of a window that
+  VS Code restored nothing in. `bash local` opens in the default profile and
+  shows the panel without focus. `bash prd` runs `bash -ic 'ssh prd; exec
+  bash'`, so it connects again when VS Code restores it. A shell that a
+  terminal of the window has by name stays as it is. The Machine setting
+  `terminal.integrated.hideOnStartup` `whenEmpty` of business-operations
+  `agent-config` stops VS Code's own default terminal ahead of them. VS Code
+  restores other plain shells at their places, with a new process.
 - The `Minion HQ` output channel logs each change of the record and, at
   activation, each session attached, resumed or not resumed with the reason.
 

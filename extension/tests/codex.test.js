@@ -141,7 +141,7 @@ test('the newest PR Codex session resumes in its original folder, excluding othe
   const archived = f.session(11);
   fs.renameSync(archived, path.join(f.home, '.codex', 'archived-' + path.basename(archived)));
   await f.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo,
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, isTransient: true,
     shellPath: f.codex, shellArgs: ['resume', ...connectionArgs, id(2)],
     env: { MINION_HQ_CODEX_PR: f.repo, CODEX_HOME: path.join(f.home, '.codex'), CODEX_SQLITE_HOME: null } }]);
   assert.deepEqual(f.shown, ['codex']);
@@ -189,7 +189,7 @@ test('Codex owns the live activity title; the PR stays attached through title ch
   const f = fixture(t);
   f.session(1, { cwd: null });
   await Promise.all([f.click(), f.click()]);
-  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, shellPath: f.codex,
+  assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ cwd: f.repo, isTransient: true, shellPath: f.codex,
     env: { MINION_HQ_CODEX_PR: f.repo }, shellArgs: newSessionArgs }]);
   const own = f.terminals[0];
   own.name = 'Codex Working pr-7';

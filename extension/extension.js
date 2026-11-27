@@ -3121,6 +3121,8 @@ class StatsViewProvider {
 // StatsViewProvider places it in a PR row. VS Code reports no title change to
 // extensions, so a visible Minion HQ view compares the terminals each second.
 const TERMINAL_NAMES_MS = 1000;
+// A change of the active terminal at most this long before a close belongs to the close.
+const CLOSE_SWITCH_MS = 1000;
 // The fields of a tmux pane that a label shows; the title comes last, as it may hold tabs.
 const TMUX_PANE_FORMAT = '#{session_name}\t#{pane_id}\t#{window_active}#{pane_active}\t#{pane_current_path}\t#{pane_title}';
 
@@ -3149,6 +3151,28 @@ class TerminalList {
     this.ids = new WeakMap();
     this.count = 0;
     this.order = []; // the terminal keys in the order the Minion HQ rows show them
+    this.active = vscode.window.activeTerminal;
+    this.left = null; // the terminal that the last change of the active terminal left, and when
+  }
+
+  activeChanged(terminal) {
+    this.left = { terminal: this.active, at: Date.now() };
+    this.active = terminal;
+  }
+
+  // When the active terminal closes, VS Code shows the next terminal in its
+  // own tab order; Minion HQ shows the terminal of the next row below instead,
+  // or of the nearest row above when no row below has one. VS Code can report
+  // its own choice of active terminal just before the close.
+  closed(terminal) {
+    const left = this.left && this.left.terminal === terminal && Date.now() - this.left.at < CLOSE_SWITCH_MS;
+    if (vscode.window.activeTerminal !== terminal && !left) return;
+    const at = this.order.indexOf(this.ids.get(terminal));
+    if (at < 0) return;
+    const all = userTerminals();
+    const row = (key) => all.find((t) => t !== terminal && this.ids.get(t) === key);
+    const next = [...this.order.slice(at + 1), ...this.order.slice(0, at).reverse()].map(row).find(Boolean);
+    if (next) next.show();
   }
 
   // A terminal's key; the first call also asks for its process id.
@@ -3273,8 +3297,8 @@ function activate(context) {
   provider.terminalList = terminalList;
   context.subscriptions.push(...terminalList.commands(),
     vscode.window.onDidOpenTerminal(() => provider.pushTerminals()),
-    vscode.window.onDidCloseTerminal(() => provider.pushTerminals()),
-    vscode.window.onDidChangeActiveTerminal(() => provider.pushTerminals()),
+    vscode.window.onDidCloseTerminal((t) => { terminalList.closed(t); provider.pushTerminals(); }),
+    vscode.window.onDidChangeActiveTerminal((t) => { terminalList.activeChanged(t); provider.pushTerminals(); }),
     { dispose: () => clearInterval(provider.terminalTimer) });
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('scmDiffStats', provider));
   vscode.commands.executeCommand('setContext', 'scmDiffStats.loading', provider.loading);

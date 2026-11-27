@@ -128,6 +128,28 @@ test('Ctrl+PageDown and Ctrl+PageUp in a terminal follow the order of the Minion
   assert.equal(f.vscode.window.activeTerminal, d);
 });
 
+test('when the active terminal closes, the terminal of the next row below shows, or of the nearest row above after the last row', () => {
+  const f = fixture();
+  const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map((n) => f.terminal(n));
+  f.vscode.window.terminals.push(a, b, c, d, e);
+  f.list.order = [c, a, b, d].map((t) => f.list.track(t));
+  const close = (t) => { f.vscode.window.terminals.splice(f.vscode.window.terminals.indexOf(t), 1); f.list.closed(t); };
+  f.vscode.window.activeTerminal = a;
+  close(a);
+  assert.deepEqual(f.shown, ['b'], 'the row below, not the next tab in opening order');
+  f.vscode.window.activeTerminal = d;
+  close(d);
+  assert.deepEqual(f.shown, ['b', 'b'], 'after the last row, the nearest row above');
+  // VS Code reports its own choice e just before the close of the active b.
+  f.list.activeChanged(b);
+  f.vscode.window.activeTerminal = e;
+  f.list.activeChanged(e);
+  close(b);
+  assert.deepEqual(f.shown, ['b', 'b', 'c']);
+  close(e);
+  assert.deepEqual(f.shown, ['b', 'b', 'c'], 'a terminal that closes while another is active changes nothing');
+});
+
 test('the manifest has no Terminals view, keeps the cycling keys and hides the terminal tab list', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).contributes;
   assert.deepEqual(manifest.views.diffStats.map((v) => v.id), ['scmDiffStats']);

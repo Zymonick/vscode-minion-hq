@@ -357,6 +357,9 @@ spinner. Other terminals come first, in opening order, under a
 collapsible `terminals (N)` group, each in a row with its label. A click on a
 mark or a terminal row shows the terminal and gives it focus. The active
 terminal's mark has an outline, and its PR row or terminal row is highlighted.
+When the active terminal closes, Minion HQ shows the terminal of the next row
+below and gives it focus, or of the nearest row above when no row below has a
+terminal, in place of VS Code's next terminal in its own tab order.
 
 A terminal's label is its name, or the name of its process when the name is
 empty, and its folder is the folder its process runs in, read from `/proc`. A

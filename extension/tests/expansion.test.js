@@ -206,7 +206,7 @@ test('a narrow row truncates markers before the worktree label and keeps names, 
     }
     return Number(value);
   };
-  for (const cls of ['.hdr .name', '.behind-n', '.claude', '.codex', '.shots', '.cx', '.st', '.add', '.del']) {
+  for (const cls of ['.hdr .name', '.behind-n', '.claude', '.codex', '.shots', '.case', '.cx', '.st', '.add', '.del']) {
     assert.equal(shrink(cls), 0, cls);
   }
   for (const label of ['.dim', '.pr-origin', '.pr-custom-label']) {

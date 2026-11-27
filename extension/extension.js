@@ -551,6 +551,9 @@ function startChrome(args) {
   });
 }
 
+// The production page of the Kylie Case that `ci case` linked to a PR.
+const CASE_URL = 'https://kylie.duett-boutiques.ch/case/';
+
 // Each click re-reads the set into a scratch page and opens it in Chrome.
 async function openShots(repo) {
   const dir = shotsDir(repo.repoPath, repo.pr.serial);
@@ -626,7 +629,8 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   const serial = +m[1];
   const ciState = ciStateDir(repoPath);
   const slug = readCiState(ciState, 'pr-' + serial + '.slug');
-  const label = labelFrom(slug, readCiState(ciState, 'pr-' + serial + '.case'));
+  const caseValue = readCiState(ciState, 'pr-' + serial + '.case');
+  const label = labelFrom(slug, caseValue);
   const origin = originFrom(readCiState(ciState, 'pr-' + serial + '.from'), serial);
   const group = readCiState(ciState, 'pr-' + serial + '.group');
   const known = fs.existsSync(ciState); // an unrelated repo named pr-N stays untagged
@@ -636,6 +640,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   else if (readiness) { status = readiness.state; statusLabel = readiness.statusLabel; }
   else if (known) status = 'wip';
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
+    caseNumber: CASE_NUMBER_RE.test(caseValue || '') ? +caseValue : null,
     statusLabel, customLabel: readiness && readiness.customLabel, origin,
     group: GROUP_RE.test(group || '') ? group : '',
     postponed: fs.existsSync(path.join(ciState, 'pr-' + serial + '.postponed')), // `ci postpone`
@@ -1391,7 +1396,8 @@ function getHtml(nonce) {
   .claude { color: var(--vscode-charts-orange, #d18616); margin-left: 8px; flex: none; opacity: .75; }
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .shots { color: var(--vscode-charts-green, #89d185); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
-  .claude:hover, .codex:hover, .shots:hover { opacity: 1; }
+  .case { color: var(--vscode-charts-purple, #b180d7); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
+  .claude:hover, .codex:hover, .shots:hover, .case:hover { opacity: 1; }
   .term { margin-left: 8px; flex: none; padding: 0 3px; border-radius: 3px; opacity: .8; }
   .term:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
   .term.term-on { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
@@ -1734,6 +1740,14 @@ function render() {
       + '<rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>'
       + '<path d="m3.5 11.5 3-3.5 2.5 2.5 1.5-1.5 2 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>'
       + '<circle cx="10.5" cy="6" r="1" fill="currentColor"/></svg></span>' : '';
+    // A PR that ci case linked to a Kylie Case opens the Case in the browser.
+    const caseNumber = r.pr && r.pr.caseNumber;
+    const caseHtml = caseNumber ? '<span class="case" data-case="' + esc(r.repoPath) + '" title="'
+      + esc('Case #' + caseNumber + ': open it in the browser')
+      + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Case">'
+      + '<rect x="1.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>'
+      + '<path d="M5.5 4.5v-1.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1.5M1.5 8.5h13" fill="none" stroke="currentColor" stroke-width="1.3"/>'
+      + '</svg></span>' : '';
     // A PR worktree's branch only ever repeats its folder name, so the row shows
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
@@ -1750,7 +1764,7 @@ function render() {
     }
     const prName = r.pr && /^pr-\\d+$/.test(r.name) ? PR_PREFIX + esc(r.name.slice(3)) : esc(r.name);
     h += row(d, { hdr: true, twist: rc, name: prName, tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
-      btns: termHtml + claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|' + rd,
+      btns: termHtml + claudeHtml + codexHtml + shotsHtml + caseHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|' + rd,
       cls: own.some((t) => t.active) ? 'term-on' : '' });
     if (rc) continue;
 
@@ -1831,6 +1845,11 @@ document.addEventListener('click', (ev) => {
   const shots = ev.target.closest('.shots');
   if (shots) {
     vscode.postMessage({ type: 'shots', repoPath: shots.dataset.shots });
+    return;
+  }
+  const kase = ev.target.closest('.case');
+  if (kase) {
+    vscode.postMessage({ type: 'case', repoPath: kase.dataset.case });
     return;
   }
   const schema = ev.target.closest('.prst-schema');
@@ -3015,6 +3034,11 @@ class StatsViewProvider {
         log('shots: ' + repo.name + ': ' + error.message);
         vscode.window.showErrorMessage(`Could not open the screenshots of ${repo.name}: ${error.message}`);
       }
+    } else if (m.type === 'case') {
+      const repo = this.data.get(m.repoPath);
+      if (!repo || !repo.pr || !repo.pr.caseNumber) return;
+      const opened = await vscode.env.openExternal(vscode.Uri.parse(CASE_URL + repo.pr.caseNumber));
+      if (!opened) vscode.window.showErrorMessage(`Could not open Case #${repo.pr.caseNumber} of ${repo.name}.`);
     } else if (m.type === 'schema') {
       const repo = this.data.get(m.repoPath);
       if (!repo || !repo.vsMaster) return;

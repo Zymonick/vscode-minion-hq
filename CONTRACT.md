@@ -57,8 +57,8 @@ A row that does not fit truncates its parts with an ellipsis in this order:
 the origin and custom labels and a file's folder, the conflicts and agent
 markers, the task status marker or a file name, then the branch or CI label of
 a worktree row. Section and worktree names, up to half the row, `↓N`, the
-Claude, Codex and screenshot controls, and the number columns keep their full
-width.
+Claude, Codex, screenshot and Case controls, and the number columns keep their
+full width.
 
 Below 560 px each indent level is one character wide, and the gaps between
 the parts of a row are narrower. PR rows show their number without `pr-`, also
@@ -208,7 +208,7 @@ migration. Git runs only on the click; the marker tooltip names the click.
 Minion HQ displays CI state without controls to create PRs, start previews,
 run tests, land, commit, push, or launch repair agents. Run those actions in
 the terminal. Legacy action messages and command settings do not enable them.
-Keep file and diff navigation, refresh, expansion, and Claude, Codex and screenshot per PR controls.
+Keep file and diff navigation, refresh, expansion, and Claude, Codex, screenshot and Case per PR controls.
 Use the existing refresh lifecycle; do not add polling or background jobs for
 readiness.
 
@@ -469,6 +469,16 @@ every image of the set the page does not show, in natural path order. Without
 `index.html` it shows all images. The page loads only images and runs no
 script; links outside the set go nowhere. Clicking an image opens that file
 full size in Chrome. A missing set or Chrome shows an error.
+
+## Case per PR
+
+A PR row carries a purple briefcase control, also in a narrow view, when
+`.ci/pr-N.case`, which `ci case` records, holds a Case number that matches
+`^[1-9][0-9]{0,6}$`. Its tooltip names the Case. Read the file within the
+existing repository scan. Clicking the control opens
+`https://kylie.duett-boutiques.ch/case/N` with `vscode.env.openExternal`, so
+the browser of the machine that runs the VS Code window shows it. The click
+never toggles the row; a refused open shows an error.
 
 ## Editor placement
 

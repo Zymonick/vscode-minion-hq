@@ -1391,14 +1391,17 @@ function getHtml(nonce) {
   /* A narrow row gives way in order: origin, custom labels and file folders,
      then conflicts and agents, then the status or a file name, then the branch
      or CI label of a worktree. Header names, ↓N, controls and numbers keep
-     their width. Each tier's flex-shrink dwarfs the next, so it empties first. */
-  .name { overflow: hidden; text-overflow: ellipsis; }
+     their width. Each tier's flex-shrink dwarfs the next, so it empties first.
+     The last tier keeps the factor 1: flexbox shrinks items whose factors sum
+     below 1 only by that fraction of the overflow, so the row would overflow. */
+  .name { overflow: hidden; text-overflow: ellipsis; flex-shrink: 1e6; }
   .hdr .name { font-weight: 600; flex: none; max-width: 50%; }
   .grp .name { font-size: .85em; text-transform: uppercase; letter-spacing: .04em; opacity: .8; }
   .dim, .pr-origin, .pr-custom-label, .pr-conflicts, .agent, .prst { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .dim, .pr-origin, .pr-custom-label { flex-shrink: 1e12; }
-  .pr-conflicts, .agent { flex-shrink: 1e6; }
-  .hdr .dim { flex-shrink: 1e-6; }
+  .dim, .pr-origin, .pr-custom-label { flex-shrink: 1e18; }
+  .pr-conflicts, .agent { flex-shrink: 1e12; }
+  .prst { flex-shrink: 1e6; }
+  .hdr .dim { flex-shrink: 1; }
   .short { display: none; }
   .dim { opacity: .6; margin-left: 7px; font-size: .9em; }
   .spacer { flex: 1; min-width: 8px; }
@@ -1453,7 +1456,7 @@ function getHtml(nonce) {
        screenshot control, short status and conflicts words, and narrow gaps. */
     .pfx, .cxl, .codex, .shots, .long { display: none; }
     .short { display: inline; }
-    .pr-conflicts { flex-shrink: 1e-3; }
+    .pr-conflicts { flex-shrink: 1e3; }
     .dim, .prst, .pr-origin, .pr-custom-label, .pr-conflicts, .behind-n { margin-left: 3px; }
     .claude, .agent { margin-left: 4px; }
     .spacer { min-width: 4px; }

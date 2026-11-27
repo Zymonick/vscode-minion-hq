@@ -215,7 +215,8 @@ test('a narrow row truncates markers before the worktree label and keeps names, 
   for (const marker of ['.pr-conflicts', '.agent']) assert.ok(shrink(marker) >= 1e6 * shrink('.prst'), marker);
   assert.ok(shrink('.dim') >= 1e6 * shrink('.name'));
   assert.ok(shrink('.prst') >= 1e6 * shrink('.hdr .dim'));
-  assert.ok(shrink('.hdr .dim') > 0);
+  // Flexbox shrinks items whose factors sum below 1 only by that fraction of the overflow.
+  assert.ok(shrink('.hdr .dim') >= 1 && shrink('.hdr .dim', css) >= 1, 'the last tier empties a row that overflows');
   assert.match(css, /\.row \{[^}]*padding-left: calc\(4px \+ var\(--depth\) \* 14px\)/);
   assert.match(css, /\n  \.short \{ display: none; \}/);
   assert.doesNotMatch(css.slice(0, css.indexOf('@media')), /\.pfx/);

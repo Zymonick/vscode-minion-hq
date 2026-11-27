@@ -17,8 +17,12 @@ Kylie appears under one header for each group, with the group name and its row
 count. Headers follow group names in case-insensitive order, and rows without a
 group follow last under `no group`; inside a header, rows keep the order above
 and indent one level, with everything they open.
+A PR that `ci postpone` marks with `.ci/pr-N.postponed` leaves its group and
+follows last, after `no group`, under one `postponed` header with its row
+count. That header starts collapsed until the user opens it.
 A click on a header collapses or opens its rows. Collapse All and Expand All
-leave the headers as they are. Without any group, no header appears.
+leave the headers as they are. Without any group or postponed PR, no header
+appears.
 
 ## Loading
 

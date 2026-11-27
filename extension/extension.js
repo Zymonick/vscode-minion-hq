@@ -317,6 +317,7 @@ async function collectRepo(repoPath, testing) {
     name,
     // `ci group` names a PR's Kylie app or area; Minion HQ's own checkouts are minion work.
     group: pr ? pr.group : name.startsWith('minion-') ? 'minion' : '',
+    postponed: !!(pr && pr.postponed),
     branch,
     staged,
     unstaged,
@@ -637,6 +638,7 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
     statusLabel, customLabel: readiness && readiness.customLabel, origin,
     group: GROUP_RE.test(group || '') ? group : '',
+    postponed: fs.existsSync(path.join(ciState, 'pr-' + serial + '.postponed')), // `ci postpone`
     conflicts: (readiness && readiness.conflicts) || [],
     shots: shotsSummary(repoPath, serial), estimate: estimateSummary(repoPath, serial) } : null;
 }
@@ -1641,13 +1643,16 @@ function groupedFiles(depth, repoPath, list, files, fileHtml) {
 
 // Once any row has a group, rows sit under one header per group in name order.
 // Kylie stays first without a header; rows without a group follow under "no group".
+// Postponed PRs follow last under one header that starts collapsed.
+const POSTPONED = '~postponed';
 function groupKey(r) {
-  return r.name.toLowerCase() === 'kylie' ? null : r.group || '';
+  if (r.name.toLowerCase() === 'kylie') return null;
+  return r.postponed ? POSTPONED : r.group || '';
 }
 
 function groupRank(r) {
   const key = groupKey(r);
-  return key === null ? '0' : key ? '1' + key.toLowerCase() : '2';
+  return key === null ? '0' : key === POSTPONED ? '3' : key ? '1' + key.toLowerCase() : '2';
 }
 
 function render() {
@@ -1656,7 +1661,7 @@ function render() {
     root.innerHTML = '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>';
     return;
   }
-  const grouped = repos.some((r) => r.group);
+  const grouped = repos.some((r) => r.group || r.postponed);
   const shown = grouped ? [...repos].sort((a, b) => groupRank(a).localeCompare(groupRank(b))) : repos;
   let h = '';
   // Terminals without a PR row come first under their own header.
@@ -1676,13 +1681,14 @@ function render() {
   let header = null;
   for (const r of shown) {
     const key = grouped ? groupKey(r) : null;
+    const shut = key === POSTPONED ? 1 : 0;
     if (key !== null && key !== header) {
       header = key;
       const members = shown.filter((o) => groupKey(o) === key).length;
-      h += row(0, { grp: true, twist: isCollapsed('p|' + key, false),
-        name: esc(key || 'no group') + ' (' + members + ')', act: 't|p|' + key + '|0' });
+      h += row(0, { grp: true, twist: isCollapsed('p|' + key, !!shut),
+        name: esc(shut ? 'postponed' : key || 'no group') + ' (' + members + ')', act: 't|p|' + key + '|' + shut });
     }
-    if (key !== null && isCollapsed('p|' + key, false)) continue;
+    if (key !== null && isCollapsed('p|' + key, !!shut)) continue;
     const d = key === null ? 0 : 1; // rows under a group header indent one level
     const rid = 'r|' + r.repoPath;
     const rd = r.pr ? 1 : 0; // a PR row starts collapsed until it is toggled

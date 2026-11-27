@@ -289,6 +289,15 @@ test('a recorded group reaches the PR row and a malformed one reads as none', as
   assert.equal((await f.collectRepo(minion)).group, 'minion');
 });
 
+test('a postponed mark reaches the PR row', async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.collectPr(f.repo, 'master', new Set(), null)).postponed, false);
+  assert.equal((await f.collectRepo(f.repo)).postponed, false);
+  fs.writeFileSync(path.join(path.dirname(f.repo), '.ci', 'pr-7.postponed'), '');
+  assert.equal((await f.collectPr(f.repo, 'master', new Set(), null)).postponed, true);
+  assert.equal((await f.collectRepo(f.repo)).postponed, true);
+});
+
 test('open-PR conflicts render after the custom label and a malformed list is unavailable', async (t) => {
   const f = fixture(t);
   const root = { innerHTML: '' };

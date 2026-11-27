@@ -394,6 +394,23 @@ Next Terminal` and `Focus Previous Terminal`, which replace VS Code's group
 commands on these keys: they show the next or previous row's terminal, and
 wrap around. Without an active terminal they start at the first or last row.
 
+## Terminals in rows (trial)
+
+This trial shows the window's terminals in the Minion HQ rows as well, so
+Simon can compare it with the Terminals view and keep one of the two. Each
+terminal has the label and place that the Terminals view gives it. A terminal
+belongs to a PR row when that row's Claude or Codex control opened it, when
+its label starts with the PR number, such as `✳ pr-7 …` or `Claude pr-7`, or
+when its folder is in the PR worktree. A PR row shows a mark for each of its
+terminals before the Claude control: the first symbol of the label, such as
+`✳` or `◐`, or `›_`; the tooltip holds the label. Other terminals come first
+under a collapsible `terminals (N)` group, each in a row with its label. A
+click on a mark or a terminal row shows the terminal. The active terminal's
+mark has an outline, and its PR row or terminal row is highlighted. A visible
+Minion HQ view compares the terminals each second and posts only a change; it
+reads the tmux pane titles itself only while the Terminals view is hidden. A
+hidden view runs no timer.
+
 ## Background Claude sessions
 
 `claude --bg`, as `/fork-pr` runs it, starts a Claude session without a

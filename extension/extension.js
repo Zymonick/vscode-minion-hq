@@ -1697,8 +1697,13 @@ function render() {
       agentHtml = '<span class="agent" title="agent session(s) working in this worktree: '
         + esc(ag.map(a => a.kind + (a.name ? ' “' + a.name + '”' : '') + ' (pid ' + a.pid + ')').join(', ')) + '">● ' + esc(label) + '</span>';
     }
-    // Each PR opens its Claude or Codex prompt in a VS Code terminal.
-    const claudeHtml = r.pr ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
+    // A PR's terminals show their live mark; a click shows the terminal.
+    const own = terminals.filter((t) => t.repoPath === r.repoPath);
+    const termHtml = own.map((t) => '<span class="term' + (t.active ? ' term-on' : '') + '" data-term="' + esc(t.key)
+      + '" title="' + esc(t.name) + '">' + esc(terminalMark(t.name)) + '</span>').join('');
+    // Each PR opens its Claude or Codex prompt in a VS Code terminal; while a
+    // Claude terminal of the PR is open, its mark replaces the Claude control.
+    const claudeHtml = r.pr && !own.some((t) => t.claude) ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
       + esc('Claude: open the terminal for ' + r.name + ', continuing its session or starting one') + '">✻</span>' : '';
     const codexHtml = r.pr ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
       + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
@@ -1706,10 +1711,6 @@ function render() {
       + '<path d="m3 4 4 4-4 4m6 0h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : '';
     // A PR with a screenshot set opens it in Chrome.
     const shots = r.pr && r.pr.shots;
-    // A PR's terminals show their live mark; a click shows the terminal.
-    const own = terminals.filter((t) => t.repoPath === r.repoPath);
-    const termHtml = own.map((t) => '<span class="term' + (t.active ? ' term-on' : '') + '" data-term="' + esc(t.key)
-      + '" title="' + esc(t.name) + '">' + esc(terminalMark(t.name)) + '</span>').join('');
     const shotsHtml = shots ? '<span class="shots" data-shots="' + esc(r.repoPath) + '" title="'
       + esc('Screenshots of ' + r.name + ': ' + shots.images + (shots.images === 1 ? ' image' : ' images')
         + (shots.taken ? ', taken ' + shots.taken : ''))
@@ -2894,7 +2895,7 @@ class StatsViewProvider {
     const active = vscode.window.activeTerminal;
     return vscode.window.terminals.map((t) => {
       const key = list.track(t), look = list.look(t);
-      return { key, name: look.label, repoPath: terminalPr(t, look, prs), active: t === active };
+      return { key, name: look.label, repoPath: terminalPr(t, look, prs), active: t === active, claude: runsClaude(t, look) };
     });
   }
 
@@ -3172,6 +3173,16 @@ class TerminalList {
       vscode.commands.registerCommand('scmDiffStats.terminal.focusPrevious', () => this.focusNext(-1)),
     ];
   }
+}
+
+// A terminal that runs Claude: the Claude control opened it, it shows a claude
+// tmux session, or its label is Claude's title, which starts with ✳ while
+// Claude is idle and with a spinner glyph while it works.
+const CLAUDE_TITLE = /^\s*(?:[✳◐-◓⠀-⣿]|claude\b)/iu;
+
+function runsClaude(terminal, look) {
+  const env = (terminal.creationOptions && terminal.creationOptions.env) || {};
+  return !!env.MINION_HQ_CLAUDE_PR || tmuxTerminals.has(terminal) || CLAUDE_TITLE.test(look.label || '');
 }
 
 // The PR row of a terminal: the PR whose Claude or Codex control opened it,

@@ -210,7 +210,8 @@ readiness.
 
 ## Claude per PR
 
-Every PR row carries one Claude control; other rows have none. It opens the
+Every PR row carries one Claude control while no Claude terminal of the PR is
+open (see Terminals in rows); other rows have none. It opens the
 PR's Claude session as the `claude` CLI in a VS Code terminal, never in the
 Claude Code chat panel. Do not assign a fixed terminal name: Claude's live
 title shows `◐`/`◑` while it works and `✳` while it is idle or waiting for input.
@@ -337,7 +338,11 @@ that row's Claude or Codex control opened it, when its label starts with the
 PR number, such as `✳ pr-7 …` or `Claude pr-7`, or when its folder is in the
 PR worktree. A PR row shows a mark for each of its terminals before the Claude
 control: the first symbol of the label, such as `✳` or `◐`, or `›_`; the
-tooltip holds the label. Other terminals come first, in opening order, under a
+tooltip holds the label. While a terminal of the PR runs Claude, its mark
+replaces the PR row's Claude control. A terminal runs Claude when the Claude
+control opened it, when it shows a claude tmux session, or when its label
+starts with `Claude` or with Claude's title glyph: `✳`, `◐`–`◓` or a Braille
+spinner. Other terminals come first, in opening order, under a
 collapsible `terminals (N)` group, each in a row with its label. A click on a
 mark or a terminal row shows the terminal and gives it focus. The active
 terminal's mark has an outline, and its PR row or terminal row is highlighted.

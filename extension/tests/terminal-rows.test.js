@@ -17,7 +17,7 @@ function fixture() {
     window: { terminals: [], activeTerminal: undefined, createOutputChannel: () => ({ appendLine() {} }) },
     commands: { executeCommand: async () => {} },
   };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, TerminalList, terminalPr, getHtml });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, TerminalList, terminalPr, tmuxTerminals, getHtml });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout, process,
     setInterval: (fn, ms) => { intervals.set(++nextTimer, { fn, ms }); return nextTimer; },
     clearInterval: (id) => intervals.delete(id),
@@ -35,26 +35,31 @@ function fixture() {
   return { ...api, provider, vscode, terminal, view, show, posted, shown, intervals };
 }
 
-test('a terminal belongs to the PR row whose control opened it, whose number its label starts with, or in whose worktree it runs', () => {
+test('a terminal belongs to the PR row whose control opened it, whose number its label starts with, or in whose worktree it runs, and is known to run Claude', () => {
   const f = fixture();
   const w = f.vscode.window;
   w.terminals.push(
     f.terminal('bash local'),
     f.terminal('✳ pr-7 ci [wip] three words'),
     f.terminal('◐ PR-70 working'),
-    f.terminal('claude', { MINION_HQ_CLAUDE_PR: '/w/pr-70' }),
+    f.terminal('node', { MINION_HQ_CLAUDE_PR: '/w/pr-70' }),
     f.terminal('Claude pr-7'),
     f.terminal('✳ pr-9 a PR without a row'),
-    f.terminal('notes about pr-7'));
+    f.terminal('notes about pr-7'),
+    f.terminal('node', { MINION_HQ_CODEX_PR: '/w/pr-7' }),
+    f.terminal('tmux'));
+  f.tmuxTerminals.set(w.terminals[8], 'claude-kylie-3');
   w.activeTerminal = w.terminals[2];
-  assert.deepEqual(plain(f.provider.terminals()).map((t) => [t.name, t.repoPath, t.active]), [
-    ['bash local', null, false],
-    ['✳ pr-7 ci [wip] three words', '/w/pr-7', false],
-    ['◐ PR-70 working', '/w/pr-70', true],
-    ['claude', '/w/pr-70', false],
-    ['Claude pr-7', '/w/pr-7', false],
-    ['✳ pr-9 a PR without a row', null, false],
-    ['notes about pr-7', null, false],
+  assert.deepEqual(plain(f.provider.terminals()).map((t) => [t.name, t.repoPath, t.active, t.claude]), [
+    ['bash local', null, false, false],
+    ['✳ pr-7 ci [wip] three words', '/w/pr-7', false, true],
+    ['◐ PR-70 working', '/w/pr-70', true, true],
+    ['node', '/w/pr-70', false, true],
+    ['Claude pr-7', '/w/pr-7', false, true],
+    ['✳ pr-9 a PR without a row', null, false, true],
+    ['notes about pr-7', null, false, false],
+    ['node', '/w/pr-7', false, false],
+    ['tmux', null, false, true],
   ]);
   const keys = f.provider.terminals().map((t) => t.key);
   assert.equal(new Set(keys).size, keys.length);
@@ -95,7 +100,7 @@ test('a visible view compares the terminals each second and posts only a change;
   assert.equal(f.intervals.size, 0, 'hiding the view stops its timer');
 });
 
-test('PR rows show their terminals, others come first under a terminals header, and clicks show a terminal', () => {
+test('PR rows show their terminals, a Claude terminal replaces the Claude control, others come first under a terminals header, and clicks show a terminal', () => {
   const f = fixture();
   const root = { innerHTML: '' }, posted = [];
   let receive, click;
@@ -107,19 +112,23 @@ test('PR rows show their terminals, others come first under a terminals header, 
   });
   const row = (repoPath, pr) => ({ repoPath, name: path.basename(repoPath), branch: path.basename(repoPath),
     totals: { add: 0, del: 0 }, staged: [], unstaged: [], untracked: [], commits: [], pr });
-  receive({ data: { type: 'data', repos: [row('/w/kylie', null), row('/w/pr-7', { serial: 7, status: 'wip' })], terminals: [
-    { key: '1', name: 'bash local', repoPath: null, active: false },
-    { key: '2', name: '✳ pr-7 idle', repoPath: '/w/pr-7', active: true },
-    { key: '3', name: 'codex <b>', repoPath: '/w/pr-7', active: false },
-    { key: '4', name: '✳ pr-9 gone', repoPath: '/w/pr-9', active: false },
+  receive({ data: { type: 'data', repos: [row('/w/kylie', null), row('/w/pr-7', { serial: 7, status: 'wip' }),
+    row('/w/pr-8', { serial: 8, status: 'wip' })], terminals: [
+    { key: '1', name: 'bash local', repoPath: null, active: false, claude: false },
+    { key: '2', name: '✳ pr-7 idle', repoPath: '/w/pr-7', active: true, claude: true },
+    { key: '3', name: 'codex <b>', repoPath: '/w/pr-7', active: false, claude: false },
+    { key: '4', name: '✳ pr-9 gone', repoPath: '/w/pr-9', active: false, claude: true },
+    { key: '5', name: 'bash', repoPath: '/w/pr-8', active: false, claude: false },
   ] } });
   const html = root.innerHTML;
   assert.match(html, /^<div class="row grp" [^>]*data-act="t\|p\|~terminals\|0">.*terminals \(2\)/);
   assert.ok(html.indexOf('bash local') < html.indexOf('>kylie<'), 'terminals without a PR row come first');
   assert.match(html, /data-act="x\|4"><span class="twist"><\/span><span class="name">✳ pr-9 gone/);
   assert.match(html, /<div class="row hdr term-on" [^>]*data-act="t\|r\|\/w\/pr-7\|1">/);
-  assert.match(html, /<span class="term term-on" data-term="2" title="✳ pr-7 idle">✳<\/span><span class="term" data-term="3" title="codex &lt;b&gt;">›_<\/span><span class="claude"/);
-  assert.deepEqual(plain(posted.filter((m) => m.type === 'terminalOrder')), [{ type: 'terminalOrder', keys: ['1', '4', '2', '3'] }],
+  assert.match(html, /<span class="term term-on" data-term="2" title="✳ pr-7 idle">✳<\/span><span class="term" data-term="3" title="codex &lt;b&gt;">›_<\/span><span class="codex"/);
+  assert.match(html, /data-term="5" title="bash">›_<\/span><span class="claude" data-claude="\/w\/pr-8"/, 'a shell without Claude keeps the control');
+  assert.equal([...html.matchAll(/class="claude"/g)].length, 1, 'the row with a Claude terminal has no Claude control');
+  assert.deepEqual(plain(posted.filter((m) => m.type === 'terminalOrder')), [{ type: 'terminalOrder', keys: ['1', '4', '2', '3', '5'] }],
     'the cycling order is the order of the rows');
 
   click({ target: { closest: (selector) => selector === '.term' ? { dataset: { term: '3' } } : null } });

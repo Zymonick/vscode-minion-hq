@@ -118,7 +118,7 @@ test('every PR row carries one Claude control, and clicking it asks the host wit
     row(quoted, { serial: 8, status: 'wip' }),
   ] } });
   const controls = [...root.innerHTML.matchAll(/<span class="claude" data-claude="([^"]*)" title="[^"]*">✻<\/span>/g)];
-  assert.deepEqual(controls.map((m) => m[1]), [f.repo, '/tmp/a &quot;quoted&quot; &amp; &lt;odd&gt;/pr-8']);
+  assert.deepEqual(controls.map((m) => m[1]), ['/tmp/a &quot;quoted&quot; &amp; &lt;odd&gt;/pr-8', f.repo], 'a landed row follows under landed');
   assert.doesNotMatch(root.innerHTML, /<button\b|<input\b/);
 
   posted.length = 0;

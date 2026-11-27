@@ -564,15 +564,16 @@ async function openShots(repo) {
   await startChrome(['--profile-directory=KyliePreview', '--new-window', await windowsPath(page)]);
 }
 
-// Serials whose "PR N — …" squash commit is on master. Worktrees share refs, so
-// one log per master revision answers for every row in the window.
-let landedCache = { sha: null, serials: new Set() };
+// Serials whose "PR N — …" squash commit is on master, each with that commit.
+// Worktrees share refs, so one log per master revision answers for every row in
+// the window.
+let landedCache = { sha: null, serials: new Map() };
 async function landedSerials(repoPath, masterSha) {
-  if (!masterSha) return new Set();
+  if (!masterSha) return new Map();
   if (landedCache.sha === masterSha) return landedCache.serials;
-  const r = await gitFull(repoPath, ['log', '--format=%s', '-1000', masterSha]);
-  const serials = new Set();
-  for (const m of r.out.matchAll(/^PR (\d+) [—–-]/gm)) serials.add(+m[1]);
+  const r = await gitFull(repoPath, ['log', '--format=%H %s', '-1000', masterSha]);
+  const serials = new Map();
+  for (const m of r.out.matchAll(/^([0-9a-f]+) PR (\d+) [—–-]/gm)) if (!serials.has(+m[2])) serials.set(+m[2], m[1]);
   if (r.code === 0) landedCache = { sha: masterSha, serials };
   return serials;
 }
@@ -627,25 +628,55 @@ async function collectPr(repoPath, masterSha, testing, readiness) {
   const m = path.basename(repoPath).match(/^pr-(\d+)$/);
   if (!m) return null;
   const serial = +m[1];
-  const ciState = ciStateDir(repoPath);
-  const slug = readCiState(ciState, 'pr-' + serial + '.slug');
-  const caseValue = readCiState(ciState, 'pr-' + serial + '.case');
-  const label = labelFrom(slug, caseValue);
-  const origin = originFrom(readCiState(ciState, 'pr-' + serial + '.from'), serial);
-  const group = readCiState(ciState, 'pr-' + serial + '.group');
-  const known = fs.existsSync(ciState); // an unrelated repo named pr-N stays untagged
+  const facts = prFacts(repoPath, serial);
+  const known = fs.existsSync(ciStateDir(repoPath)); // an unrelated repo named pr-N stays untagged
   let status = '', statusLabel;
   if ((await landedSerials(repoPath, masterSha)).has(serial)) status = 'landed';
   else if (testing && testing.has(serial)) status = 'testing';
   else if (readiness) { status = readiness.state; statusLabel = readiness.statusLabel; }
   else if (known) status = 'wip';
-  return (label || status) ? { serial, label, status, reason: readiness && readiness.reason,
+  return (facts.label || status) ? { ...facts, status, reason: readiness && readiness.reason,
+    statusLabel, customLabel: readiness && readiness.customLabel,
+    conflicts: (readiness && readiness.conflicts) || [], estimate: estimateSummary(repoPath, serial) } : null;
+}
+
+// What CI records for a PR in .ci beside the worktrees, and its screenshot set;
+// all of it stays after the PR lands and its worktree is deleted.
+function prFacts(repoPath, serial) {
+  const ciState = ciStateDir(repoPath);
+  const caseValue = readCiState(ciState, 'pr-' + serial + '.case');
+  const group = readCiState(ciState, 'pr-' + serial + '.group');
+  return { serial, label: labelFrom(readCiState(ciState, 'pr-' + serial + '.slug'), caseValue),
     caseNumber: CASE_NUMBER_RE.test(caseValue || '') ? +caseValue : null,
-    statusLabel, customLabel: readiness && readiness.customLabel, origin,
+    origin: originFrom(readCiState(ciState, 'pr-' + serial + '.from'), serial),
     group: GROUP_RE.test(group || '') ? group : '',
     postponed: fs.existsSync(path.join(ciState, 'pr-' + serial + '.postponed')), // `ci postpone`
-    conflicts: (readiness && readiness.conflicts) || [],
-    shots: shotsSummary(repoPath, serial), estimate: estimateSummary(repoPath, serial) } : null;
+    shots: shotsSummary(repoPath, serial) };
+}
+
+// The row of a landed PR whose worktree `ci land` deleted: its CI facts, the
+// agent's estimate and the files of its squash commit, read in the Kylie checkout.
+async function collectLandedRow(kylie, repoPath, serial, hash) {
+  const files = await commitFilesOf(kylie, hash);
+  const [short, when] = (await git(kylie, ['show', '-s', '--format=%h%x02%cr', hash])).trim().split('\x02');
+  return {
+    repoPath, name: 'pr-' + serial, branch: '', group: '', postponed: false,
+    staged: [], unstaged: [], untracked: [], totals: { add: 0, del: 0 }, vsMaster: null, commits: [],
+    landed: { kylie, hash, short: short || hash.slice(0, 8), when: when || '', files, totals: sumFiles(files) },
+    pr: { ...prFacts(repoPath, serial), status: 'landed', conflicts: [], estimate: estimateSummary(kylie, serial) },
+  };
+}
+
+// A commit's files with their status letters and vendor marks.
+async function commitFilesOf(repoPath, hash) {
+  const [numOut, nsOut] = await Promise.all([
+    git(repoPath, ['show', '--numstat', '--format=', '--find-renames', hash]),
+    git(repoPath, ['show', '--name-status', '--format=', '--find-renames', hash]),
+  ]);
+  const letters = parseNameStatus(nsOut);
+  const files = parseNumstat(numOut).map((f) => ({ ...f, letter: letters[f.path] || 'M' }));
+  await markLineVendors(repoPath, hash + '^', hash, files, vendorDeclarations(repoPath), new Map());
+  return files;
 }
 
 // Import only the landed CI's read-only report. Never execute a worktree's CI
@@ -1505,7 +1536,7 @@ function setExpansion(mode) {
   const collapsed = mode === 'collapse';
   for (const r of repos) {
     state.collapsed['r|' + r.repoPath] = collapsed;
-    for (const kind of ['staged', 'changes', 'vsmaster', 'commits']) {
+    for (const kind of ['staged', 'changes', 'vsmaster', 'landed', 'commits']) {
       state.collapsed['s|' + r.repoPath + '|' + kind] = collapsed;
     }
     // File groups reopen, so an opened section shows its files.
@@ -1650,16 +1681,18 @@ function groupedFiles(depth, repoPath, list, files, fileHtml) {
 
 // Once any row has a group, rows sit under one header per group in name order.
 // Kylie stays first without a header; rows without a group follow under "no group".
-// Postponed PRs follow last under one header that starts collapsed.
+// Postponed PRs follow under one header that starts collapsed, landed PRs last.
 const POSTPONED = '~postponed';
+const LANDED = '~landed';
+const isLanded = (r) => !!(r.pr && r.pr.status === 'landed');
 function groupKey(r) {
   if (r.name.toLowerCase() === 'kylie') return null;
-  return r.postponed ? POSTPONED : r.group || '';
+  return isLanded(r) ? LANDED : r.postponed ? POSTPONED : r.group || '';
 }
 
 function groupRank(r) {
   const key = groupKey(r);
-  return key === null ? '0' : key === POSTPONED ? '3' : key ? '1' + key.toLowerCase() : '2';
+  return key === null ? '0' : key === LANDED ? '4' : key === POSTPONED ? '3' : key ? '1' + key.toLowerCase() : '2';
 }
 
 // A refresh publishes each row as its scan ends, several times a second. Only
@@ -1677,11 +1710,13 @@ function render() {
     show(root, '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>');
     return;
   }
-  const grouped = repos.some((r) => r.group || r.postponed);
-  const shown = grouped ? [...repos].sort((a, b) => groupRank(a).localeCompare(groupRank(b))) : repos;
+  // A landed PR without a worktree stays only while a terminal belongs to it.
+  const rows = repos.filter((r) => !r.landed || terminals.some((t) => t.repoPath === r.repoPath));
+  const grouped = rows.some((r) => r.group || r.postponed || isLanded(r));
+  const shown = grouped ? [...rows].sort((a, b) => groupRank(a).localeCompare(groupRank(b))) : rows;
   let h = '';
   // Terminals without a PR row come first under their own header.
-  const rowPaths = new Set(repos.map((r) => r.repoPath));
+  const rowPaths = new Set(rows.map((r) => r.repoPath));
   const loose = terminals.filter((t) => !t.repoPath || !rowPaths.has(t.repoPath));
   if (loose.length) {
     const tc = isCollapsed('p|~terminals', false);
@@ -1702,7 +1737,8 @@ function render() {
       header = key;
       const members = shown.filter((o) => groupKey(o) === key).length;
       h += row(0, { grp: true, twist: isCollapsed('p|' + key, !!shut),
-        name: esc(shut ? 'postponed' : key || 'no group') + ' (' + members + ')', act: 't|p|' + key + '|' + shut });
+        name: esc(shut ? 'postponed' : key === LANDED ? 'landed' : key || 'no group') + ' (' + members + ')',
+        act: 't|p|' + key + '|' + shut });
     }
     if (key !== null && isCollapsed('p|' + key, !!shut)) continue;
     const d = key === null ? 0 : 1; // rows under a group header indent one level
@@ -1725,9 +1761,9 @@ function render() {
       + '" title="' + esc(t.name) + '">' + esc(terminalMark(t.name)) + '</span>').join('');
     // Each PR opens its Claude or Codex prompt in a VS Code terminal; while a
     // Claude terminal of the PR is open, its mark replaces the Claude control.
-    const claudeHtml = r.pr && !own.some((t) => t.claude) ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
+    const claudeHtml = r.pr && !r.landed && !own.some((t) => t.claude) ? '<span class="claude" data-claude="' + esc(r.repoPath) + '" title="'
       + esc('Claude: open the terminal for ' + r.name + ', continuing its session or starting one') + '">✻</span>' : '';
-    const codexHtml = r.pr ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
+    const codexHtml = r.pr && !r.landed ? '<span class="codex" data-codex="' + esc(r.repoPath) + '" title="'
       + esc('Codex: open the terminal for ' + r.name + ', resuming its session or starting one')
       + '"><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="Codex">'
       + '<path d="m3 4 4 4-4 4m6 0h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : '';
@@ -1752,9 +1788,10 @@ function render() {
     // the CI label instead — the same text the sessions working here are titled
     // with, collapsed or not. Everything else keeps naming its branch.
     let repoDim = esc(r.pr && r.pr.label ? r.pr.label : r.branch);
-    // An open branch row leaves its totals to the Vs master row below it.
-    let repoCols = !r.vsMaster && (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
+    // An open branch row leaves its totals to the Vs master or Landed row below it.
+    let repoCols = !r.vsMaster && !r.landed && (t.add || t.del) ? cols(t.add, t.del, null, false) : '';
     let behindHtml = '';
+    if (rc && r.landed) repoCols = vsMasterCols(r.landed, r.pr.estimate);
     if (rc && r.vsMaster) {
       const v = r.vsMaster;
       repoCols = vsMasterCols(v, r.pr && r.pr.estimate);
@@ -1798,6 +1835,17 @@ function render() {
       if (!vc) h += groupedFiles(d + 2, r.repoPath, 'vsmaster', v.files,
         (depth, f) => fileRow(depth, r.repoPath, f, 'm|' + r.repoPath + '|' + v.mergeBase + '|' + f.path,
           f.vendor && !f.cx ? vendorCell(f.vendor) : v.cx ? cxCell(f.cx || null) : ''));
+    }
+
+    // A landed PR without a worktree lists the files of its squash commit.
+    if (r.landed) {
+      const l = r.landed;
+      const lid = 's|' + r.repoPath + '|landed';
+      const lc = isCollapsed(lid, false);
+      h += row(d + 1, { hdr: true, twist: lc, name: 'Landed (' + l.files.length + ')', dim: esc(l.short + ' · ' + l.when),
+        cols: vsMasterCols(l, r.pr.estimate), act: 't|' + lid + '|0' });
+      if (!lc) h += groupedFiles(d + 2, r.repoPath, 'landed', l.files,
+        (depth, f) => fileRow(depth, r.repoPath, f, 'k|' + r.repoPath + '|' + l.hash + '|' + f.path));
     }
 
     if (r.commits.length) {
@@ -2812,6 +2860,7 @@ class StatsViewProvider {
     this.repos = [];
     this.reposKnown = false;
     this.data = new Map();
+    this.landed = new Map(); // landed PRs without a worktree, by their former worktree path
     this.fileStats = new Map();
     this.agents = {};
     this.terminalList = null; // gives each terminal its key, label and folder
@@ -2908,6 +2957,7 @@ class StatsViewProvider {
         if (!repos.length) {
           publish();
         }
+        if (await this.collectLanded(repos)) publish();
 
         // Complexity can take much longer than Git status. Publish every basic row first.
         await collect(async (i) => {
@@ -2931,9 +2981,44 @@ class StatsViewProvider {
     return this.refreshPromise;
   }
 
+  // Each landed PR whose worktree is gone keeps a row while a terminal of the
+  // window belongs to it; the view hides the row once no terminal does. True
+  // when there were or are such rows to publish.
+  async collectLanded(repos) {
+    const had = this.landed.size > 0;
+    const kylie = repos.find((r) => path.basename(r).toLowerCase() === 'kylie');
+    const list = this.terminalList;
+    if (!kylie || !list) {
+      this.landed = new Map();
+      return had;
+    }
+    const master = (await git(kylie, ['rev-parse', '--verify', '--quiet', 'master'])).trim();
+    const live = new Set(repos.map((r) => path.basename(r)));
+    const worktrees = path.join(path.dirname(kylie), 'kylie-worktrees'); // scripts/ci WORKTREES
+    const gone = [...(await landedSerials(kylie, master))].filter(([serial]) => !live.has('pr-' + serial))
+      .map(([serial, hash]) => ({ repoPath: path.join(worktrees, 'pr-' + serial), pr: { serial }, hash }));
+    const named = new Set(userTerminals().map((t) => terminalPr(t, list.look(t), gone)));
+    const landed = new Map();
+    for (const g of gone.filter((r) => named.has(r.repoPath))) {
+      const r = await collectLandedRow(kylie, g.repoPath, g.pr.serial, g.hash).catch((e) => {
+        log('landed: pr-' + g.pr.serial + ': ' + e.message);
+        return null;
+      });
+      if (r) landed.set(g.repoPath, r);
+    }
+    if (repos !== this.repos) return false;
+    this.landed = landed;
+    return had || landed.size > 0;
+  }
+
+  // A row of the view: a repository, or a landed PR without a worktree.
+  row(repoPath) {
+    return this.data.get(repoPath) || this.landed.get(repoPath);
+  }
+
   push() {
     if (!this.view) return;
-    const repos = this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r));
+    const repos = [...this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r)), ...this.landed.values()];
     const terminals = this.terminals();
     this.terminalsSent = JSON.stringify(terminals);
     this.view.webview.postMessage({
@@ -2947,7 +3032,7 @@ class StatsViewProvider {
   terminals() {
     const list = this.terminalList;
     if (!list) return [];
-    const prs = [...this.data.values()].filter((r) => r.pr);
+    const prs = [...this.data.values(), ...this.landed.values()].filter((r) => r.pr);
     const active = vscode.window.activeTerminal;
     return userTerminals().map((t) => {
       const key = list.track(t), look = list.look(t);
@@ -2997,13 +3082,7 @@ class StatsViewProvider {
     } else if (m.type === 'ready') {
       this.push();
     } else if (m.type === 'expandCommit') {
-      const [numOut, nsOut] = await Promise.all([
-        git(m.repoPath, ['show', '--numstat', '--format=', '--find-renames', m.hash]),
-        git(m.repoPath, ['show', '--name-status', '--format=', '--find-renames', m.hash]),
-      ]);
-      const letters = parseNameStatus(nsOut);
-      const files = parseNumstat(numOut).map((f) => ({ ...f, letter: letters[f.path] || 'M' }));
-      await markLineVendors(m.repoPath, m.hash + '^', m.hash, files, vendorDeclarations(m.repoPath), new Map());
+      const files = await commitFilesOf(m.repoPath, m.hash);
       if (this.view) this.view.webview.postMessage({ type: 'commitFiles', repoPath: m.repoPath, hash: m.hash, files });
     } else if (m.type === 'terminal') {
       const list = this.terminalList;
@@ -3012,8 +3091,8 @@ class StatsViewProvider {
     } else if (m.type === 'terminalOrder') {
       if (this.terminalList && Array.isArray(m.keys)) this.terminalList.order = m.keys.filter((k) => typeof k === 'string');
     } else if (m.type === 'claude') {
-      const repo = this.data.get(m.repoPath);
-      if (!repo || !repo.pr) return;
+      const repo = this.row(m.repoPath);
+      if (!repo || !repo.pr || repo.landed) return;
       try {
         await openClaude(repo);
       } catch (error) {
@@ -3021,8 +3100,8 @@ class StatsViewProvider {
         vscode.window.showErrorMessage(`Could not open Claude for ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'codex') {
-      const repo = this.data.get(m.repoPath);
-      if (!repo || !repo.pr) return;
+      const repo = this.row(m.repoPath);
+      if (!repo || !repo.pr || repo.landed) return;
       try {
         await openCodex(repo);
       } catch (error) {
@@ -3030,7 +3109,7 @@ class StatsViewProvider {
         vscode.window.showErrorMessage(`Could not open Codex for ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'shots') {
-      const repo = this.data.get(m.repoPath);
+      const repo = this.row(m.repoPath);
       if (!repo || !repo.pr) return;
       try {
         await openShots(repo);
@@ -3039,7 +3118,7 @@ class StatsViewProvider {
         vscode.window.showErrorMessage(`Could not open the screenshots of ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'case') {
-      const repo = this.data.get(m.repoPath);
+      const repo = this.row(m.repoPath);
       if (!repo || !repo.pr || !repo.pr.caseNumber) return;
       const opened = await vscode.env.openExternal(vscode.Uri.parse(CASE_URL + repo.pr.caseNumber));
       if (!opened) vscode.window.showErrorMessage(`Could not open Case #${repo.pr.caseNumber} of ${repo.name}.`);
@@ -3063,6 +3142,7 @@ class StatsViewProvider {
         vscode.window.showErrorMessage(`Could not open the model changes of ${repo.name}: ${error.message}`);
       }
     } else if (m.type === 'open') {
+      if (m.mode === 'commit' && this.landed.has(m.repoPath)) m = { ...m, repoPath: this.landed.get(m.repoPath).landed.kylie };
       const uri = vscode.Uri.file(path.join(m.repoPath, m.path));
       const base = path.basename(m.path);
       try {
@@ -3287,7 +3367,8 @@ function terminalPr(terminal, look, prs) {
   const m = /^[^\p{L}\p{N}]*(?:(?:claude|codex)\s+)?pr[- ]?(\d+)\b/iu.exec(look.label || '');
   const named = m && prs.find((r) => r.pr.serial === +m[1]);
   if (named) return named.repoPath;
-  const home = look.cwd && prs.find((r) => look.cwd === r.repoPath || look.cwd.startsWith(r.repoPath + '/'));
+  const cwd = look.cwd && look.cwd.replace(/ \(deleted\)$/, ''); // the folder of a landed PR is gone
+  const home = cwd && prs.find((r) => cwd === r.repoPath || cwd.startsWith(r.repoPath + '/'));
   return home ? home.repoPath : null;
 }
 

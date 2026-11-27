@@ -156,6 +156,12 @@ test('commit diffs open both revisions without the Git extension', async (t) => 
   assert.equal((await h.read(h.commands.at(-1)[2])).toString(), 'committed\n');
   await h.provider.onMessage({ type: 'open', mode: 'commit', repoPath: repo, hash: base, path: 'file.py' });
   assert.equal((await h.read(h.commands.at(-1)[1])).length, 0, 'root commit has an empty parent');
+  // A landed PR without a worktree reads its squash commit in the Kylie checkout.
+  const gone = path.join(repo, 'gone', 'pr-9');
+  h.provider.landed.set(gone, { repoPath: gone, name: 'pr-9', landed: { kylie: repo, hash } });
+  await h.provider.onMessage({ type: 'open', mode: 'commit', repoPath: gone, hash, path: 'file.py' });
+  assert.equal((await h.read(h.commands.at(-1)[2])).toString(), 'committed\n');
+  assert.deepEqual(h.errors, []);
 });
 
 test('staged and working diffs use the correct index snapshot without Git discovery', async (t) => {

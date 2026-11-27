@@ -20,9 +20,11 @@ and indent one level, with everything they open.
 A PR that `ci postpone` marks with `.ci/pr-N.postponed` leaves its group and
 follows last, after `no group`, under one `postponed` header with its row
 count. That header starts collapsed until the user opens it.
+A PR whose squash commit is on `master` leaves its group and follows last,
+after `postponed`, under one open `landed` header with its row count.
 A click on a header collapses or opens its rows. Collapse All and Expand All
-leave the headers as they are. Without any group or postponed PR, no header
-appears.
+leave the headers as they are. Without any group, postponed or landed PR, no
+header appears.
 
 ## Loading
 
@@ -50,6 +52,21 @@ such as `master` itself, shows Staged and Changes sections.
 A collapsed worktree row behind `master` shows a red `↓N` directly after its
 name, N being the master commits missing from the branch, with a tooltip. A
 narrow view never truncates it. A row not behind shows nothing.
+
+## Landed PRs
+
+After `ci land` deletes the worktree of a PR, the PR keeps its row under the
+`landed` header while a terminal of the window belongs to it (see Terminals in
+rows). The row disappears when its last terminal closes. It shows what CI and
+the Kylie checkout keep: the label, origin and Case control from `.ci`, the
+screenshot control, the `[landed]` marker and the agent's estimate from
+`docs/PR_N/cx_estimate.json` of the Kylie checkout. In place of Vs master, an
+open `Landed (N)` section lists the files of the squash commit, with its short
+hash and age. The collapsed row and the section show the estimate and the
+commit's line totals, without a measured `cx`. A click on a file opens the
+commit diff from the Kylie checkout. The row has no Claude or Codex control.
+The repository scan reads these rows with Git in the Kylie checkout, only for
+the PRs that a terminal names; it adds no polling.
 
 ## Narrow view
 
@@ -214,8 +231,8 @@ readiness.
 
 ## Claude per PR
 
-Every PR row carries one Claude control while no Claude terminal of the PR is
-open (see Terminals in rows); other rows have none. It opens the
+Every PR row with a worktree carries one Claude control while no Claude
+terminal of the PR is open (see Terminals in rows); other rows have none. It opens the
 PR's Claude session as the `claude` CLI in a VS Code terminal, never in the
 Claude Code chat panel. Do not assign a fixed terminal name: Claude's live
 title shows `◐`/`◑` while it works and `✳` while it is idle or waiting for input.
@@ -347,7 +364,7 @@ extension created with `hideFromUser`, such as the `install` terminal in which
 Remote-SSH holds the window's SSH connection on the laptop. A terminal belongs to a PR row when
 that row's Claude or Codex control opened it, when its label starts with the
 PR number, such as `✳ pr-7 …` or `Claude pr-7`, or when its folder is in the
-PR worktree. A PR row shows a mark for each of its terminals before the Claude
+PR worktree, also after `ci land` deleted it. A PR row shows a mark for each of its terminals before the Claude
 control: the first symbol of the label, such as `✳` or `◐`, or `›_`; the
 tooltip holds the label. While a terminal of the PR runs Claude, its mark
 replaces the PR row's Claude control. A terminal runs Claude when the Claude
@@ -415,7 +432,7 @@ commands that named `ci land` when `/land` opened a PowerShell window:
 
 ## Codex per PR
 
-Every PR row also carries one small Codex terminal icon with a Codex tooltip,
+Every PR row with a worktree also carries one small Codex terminal icon with a Codex tooltip,
 except in a [narrow view](#narrow-view),
 opening the interactive CLI in a VS Code terminal. Leave its name unset so
 Codex's live title shows its activity indicator, including work and requests

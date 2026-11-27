@@ -116,7 +116,7 @@ test('PR rows have separate Claude and Codex controls; Codex clicks do not toggl
   const quoted = '/tmp/a "quoted" & <odd>/pr-8';
   receive({ data: { type: 'data', repos: [row(f.workspace, null), row(f.repo, { status: 'landed' }), row(quoted, { status: 'wip' })] } });
   const controls = [...root.innerHTML.matchAll(/<span class="codex" data-codex="([^"]*)" title="[^"]*"><svg[^>]*aria-label="Codex">.*?<\/svg><\/span>/g)];
-  assert.deepEqual(controls.map((m) => m[1]), [f.repo, '/tmp/a &quot;quoted&quot; &amp; &lt;odd&gt;/pr-8']);
+  assert.deepEqual(controls.map((m) => m[1]), ['/tmp/a &quot;quoted&quot; &amp; &lt;odd&gt;/pr-8', f.repo], 'a landed row follows under landed');
   assert.equal([...root.innerHTML.matchAll(/class="claude"/g)].length, 2);
   posted.length = 0;
   click({ target: { closest: (selector) => selector === '.codex' ? { dataset: { codex: quoted } } : null } });

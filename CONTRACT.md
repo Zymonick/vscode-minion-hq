@@ -374,9 +374,14 @@ spinner. Other terminals come first, in opening order, under a
 collapsible `terminals (N)` group, each in a row with its label. A click on a
 mark or a terminal row shows the terminal and gives it focus. The active
 terminal's mark has an outline, and its PR row or terminal row is highlighted.
-When the active terminal closes, Minion HQ shows the terminal of the next row
-below and gives it focus, or of the nearest row above when no row below has a
-terminal, in place of VS Code's next terminal in its own tab order.
+A terminal is idle unless its label starts with `◐`–`◓`, a Braille spinner,
+`⏳` or `⏰`: Claude works, works in the background, or holds a kylie-waits
+wait. Minion HQ reads the tmux pane titles before each choice below. When the
+active terminal closes, Minion HQ shows the idle terminal of the next row
+below and gives it focus, or of the nearest row above when no row below has
+one, in place of VS Code's next terminal in its own tab order. When no row has
+an idle terminal, it shows the terminal of the next row below, or of the
+nearest row above.
 
 A terminal's label is its name, or the name of its process when the name is
 empty, and its folder is the folder its process runs in, read from `/proc`. A
@@ -397,10 +402,10 @@ list, and the terminal gets its width; a user or Machine setting overrides it.
 In a terminal of the panel, Ctrl+PageDown and Ctrl+PageUp (Cmd+Shift+] and
 Cmd+Shift+[ on a Mac) run Minion HQ's `Focus Next Terminal` and `Focus Previous
 Terminal`, which replace VS Code's group commands on these keys: they show the
-next or previous terminal in the order of the rows, then the terminals that the
-rows do not show yet in opening order, and wrap around. They skip a
-`hideFromUser` terminal. Without an active
-terminal they start at the first or last terminal.
+next or previous idle terminal in the order of the rows, then the terminals
+that the rows do not show yet in opening order, and wrap around. They skip a
+`hideFromUser` terminal. Without an active terminal they start at the first
+or last terminal. Without another idle terminal they change nothing.
 
 ## Background Claude sessions
 

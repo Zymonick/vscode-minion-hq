@@ -3231,6 +3231,7 @@ class TerminalList {
     this.attaches = new WeakMap(); // the tmux pane that a terminal's own process attaches, or null
     this.panes = new Map(); // socket arguments + '\n' + target → { title, cwd }
     this.reading = false;
+    this.waiting = []; // the done callbacks of reads that a running read skipped
     this.ids = new WeakMap();
     this.count = 0;
     this.order = []; // the terminal keys in the order the Minion HQ rows show them
@@ -3243,19 +3244,29 @@ class TerminalList {
     this.active = terminal;
   }
 
+  // A terminal is idle unless its label starts with a mark of a session that
+  // works or that the user waits for.
+  idle(terminal) {
+    return !BUSY_TITLE.test(this.look(terminal).label);
+  }
+
   // When the active terminal closes, VS Code shows the next terminal in its
-  // own tab order; Minion HQ shows the terminal of the next row below instead,
-  // or of the nearest row above when no row below has one. VS Code can report
-  // its own choice of active terminal just before the close.
+  // own tab order; Minion HQ shows the idle terminal of the next row below
+  // instead, or of the nearest row above when no row below has one, and the
+  // next row's terminal when no row has an idle one. VS Code can report its
+  // own choice of active terminal just before the close.
   closed(terminal) {
     const left = this.left && this.left.terminal === terminal && Date.now() - this.left.at < CLOSE_SWITCH_MS;
     if (vscode.window.activeTerminal !== terminal && !left) return;
     const at = this.order.indexOf(this.ids.get(terminal));
     if (at < 0) return;
-    const all = userTerminals();
-    const row = (key) => all.find((t) => t !== terminal && this.ids.get(t) === key);
-    const next = [...this.order.slice(at + 1), ...this.order.slice(0, at).reverse()].map(row).find(Boolean);
-    if (next) next.show();
+    this.readPanes(() => {
+      const all = userTerminals();
+      const row = (key) => all.find((t) => t !== terminal && this.ids.get(t) === key);
+      const rows = [...this.order.slice(at + 1), ...this.order.slice(0, at).reverse()].map(row).filter(Boolean);
+      const next = rows.find((t) => this.idle(t)) || rows[0];
+      if (next) next.show();
+    });
   }
 
   // A terminal's key; the first call also asks for its process id.
@@ -3268,15 +3279,20 @@ class TerminalList {
     return this.ids.get(terminal);
   }
 
-  // Ctrl+PageDown and Ctrl+PageUp in a terminal follow the terminals in the
-  // order the Minion HQ rows show them, then the others in opening order.
+  // Ctrl+PageDown and Ctrl+PageUp in a terminal show the next idle terminal
+  // in the order the Minion HQ rows show them, then the others in opening order.
   focusNext(step) {
-    const all = userTerminals();
-    const shown = this.order.map((key) => all.find((t) => this.ids.get(t) === key)).filter(Boolean);
-    const rows = [...shown, ...all.filter((t) => !shown.includes(t))];
-    if (!rows.length) return;
-    const at = rows.indexOf(vscode.window.activeTerminal);
-    rows[at < 0 ? (step > 0 ? 0 : rows.length - 1) : (at + step + rows.length) % rows.length].show();
+    this.readPanes(() => {
+      const all = userTerminals();
+      const shown = this.order.map((key) => all.find((t) => this.ids.get(t) === key)).filter(Boolean);
+      const rows = [...shown, ...all.filter((t) => !shown.includes(t))];
+      const at = rows.indexOf(vscode.window.activeTerminal);
+      const start = at < 0 ? (step > 0 ? -1 : rows.length) : at;
+      for (let i = 1; i <= rows.length; i++) {
+        const t = rows[(((start + step * i) % rows.length) + rows.length) % rows.length];
+        if (t !== vscode.window.activeTerminal && this.idle(t)) return t.show();
+      }
+    });
   }
 
   // The tmux pane that a terminal shows: the claude tmux session that the agent
@@ -3313,7 +3329,8 @@ class TerminalList {
   }
 
   // Read the panes of each tmux socket that a terminal shows, with one tmux
-  // call per socket, then call done. A read that still runs skips the next one.
+  // call per socket, then call done. A read that still runs skips the next one
+  // and calls its done at its own end.
   readPanes(done = () => {}) {
     const sockets = new Map();
     for (const terminal of vscode.window.terminals) {
@@ -3321,7 +3338,8 @@ class TerminalList {
       if (shown) sockets.set(shown.socket.join(' '), shown.socket);
     }
     const tmux = agentExecutable('tmux');
-    if (!sockets.size || !tmux || this.reading) return;
+    if (!sockets.size || !tmux) return done();
+    if (this.reading) return this.waiting.push(done);
     this.reading = true;
     const panes = new Map();
     let left = sockets.size;
@@ -3338,6 +3356,7 @@ class TerminalList {
         this.panes = panes;
         this.reading = false;
         done();
+        this.waiting.splice(0).forEach((next) => next());
       });
     }
   }
@@ -3354,6 +3373,9 @@ class TerminalList {
 // tmux session, or its label is Claude's title, which starts with ✳ while
 // Claude is idle and with a spinner glyph while it works.
 const CLAUDE_TITLE = /^\s*(?:[✳◐-◓⠀-⣿]|claude\b)/iu;
+// The title of a session that is not idle: Claude's spinner while it works, the
+// kylie-waits ⏳ while it works in the background and ⏰ while it holds a wait.
+const BUSY_TITLE = /^\s*[◐-◓⠀-⣿⏳⏰]/u;
 
 function runsClaude(terminal, look) {
   const env = (terminal.creationOptions && terminal.creationOptions.env) || {};

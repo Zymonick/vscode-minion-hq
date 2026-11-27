@@ -103,7 +103,7 @@ test('a terminal that shows a tmux pane has its title and folder, read with one 
   f.list.readPanes(() => read++);
   assert.equal(calls.length, 2, 'a read that still runs skips the next one');
   pending.splice(0).forEach((reply) => reply());
-  assert.equal(read, 1, 'the end of a read calls back once');
+  assert.equal(read, 2, 'the end of a read calls back the read and the one that it skipped');
   assert.deepEqual(f.vscode.window.terminals.map((terminal) => look(f, terminal)), [
     { label: '✳ pr-1316 leaveMgmt', cwd: '/home/u/kylie-worktrees/pr-1316' },
     { label: '◐ Image attachment', cwd: '/home/u/kylie' },
@@ -128,6 +128,23 @@ test('Ctrl+PageDown and Ctrl+PageUp in a terminal follow the order of the Minion
   assert.equal(f.vscode.window.activeTerminal, d);
 });
 
+test('Ctrl+PageDown and Ctrl+PageUp skip a terminal that works or that the user waits for', () => {
+  const f = fixture();
+  const [a, b, c, d, e] = ['✳ pr-1 a', '◐ pr-2 b', '⏳ pr-3 c', '✳ pr-4 d', '⏰ pr-5 e'].map((n) => f.terminal(n));
+  f.vscode.window.terminals.push(a, b, c, d, e);
+  f.list.order = [a, b, c, d, e].map((t) => f.list.track(t));
+  f.list.commands();
+  const next = f.commands.get('scmDiffStats.terminal.focusNext'), previous = f.commands.get('scmDiffStats.terminal.focusPrevious');
+  next(); next(); next();
+  assert.deepEqual(f.shown, ['✳ pr-1 a', '✳ pr-4 d', '✳ pr-1 a']);
+  f.vscode.window.activeTerminal = c;
+  previous();
+  assert.equal(f.vscode.window.activeTerminal, a, 'from a busy terminal, the idle one above');
+  d.name = '◑ pr-4 d';
+  next();
+  assert.equal(f.vscode.window.activeTerminal, a, 'without another idle terminal, the active one stays');
+});
+
 test('when the active terminal closes, the terminal of the next row below shows, or of the nearest row above after the last row', () => {
   const f = fixture();
   const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map((n) => f.terminal(n));
@@ -148,6 +165,19 @@ test('when the active terminal closes, the terminal of the next row below shows,
   assert.deepEqual(f.shown, ['b', 'b', 'c']);
   close(e);
   assert.deepEqual(f.shown, ['b', 'b', 'c'], 'a terminal that closes while another is active changes nothing');
+});
+
+test('when the active terminal closes, the next idle row shows, and the next row when no row is idle', () => {
+  const f = fixture();
+  const [a, b, c, d] = ['✳ a', '◐ b', '⏳ c', '✳ d'].map((n) => f.terminal(n));
+  f.vscode.window.terminals.push(a, b, c, d);
+  f.list.order = [a, b, c, d].map((t) => f.list.track(t));
+  const close = (t) => { f.vscode.window.terminals.splice(f.vscode.window.terminals.indexOf(t), 1); f.list.closed(t); };
+  f.vscode.window.activeTerminal = a;
+  close(a);
+  assert.deepEqual(f.shown, ['✳ d'], 'below the closed row, past a busy and a waiting row');
+  close(d);
+  assert.deepEqual(f.shown, ['✳ d', '⏳ c'], 'no idle row left: the nearest row above');
 });
 
 test('the manifest has no Terminals view, keeps the cycling keys and hides the terminal tab list', () => {

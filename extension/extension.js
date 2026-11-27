@@ -1390,6 +1390,10 @@ function getHtml(nonce) {
   .codex { color: var(--vscode-charts-blue, #75beff); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .shots { color: var(--vscode-charts-green, #89d185); margin-left: 8px; display: inline-flex; align-items: center; flex: none; opacity: .75; }
   .claude:hover, .codex:hover, .shots:hover { opacity: 1; }
+  .term { margin-left: 8px; flex: none; padding: 0 3px; border-radius: 3px; opacity: .8; }
+  .term:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+  .term.term-on { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
+  .row.term-on { background: var(--vscode-list-inactiveSelectionBackground); }
   .prst, .pr-origin, .pr-custom-label, .pr-conflicts { margin-left: 7px; font-size: .85em; font-weight: 600; cursor: default; }  .pr-origin, .pr-custom-label { color: var(--vscode-descriptionForeground); }
   .pr-conflicts { color: var(--vscode-editorWarning-foreground, #cca700); }
   .prst-landed { color: var(--vscode-charts-blue, #75beff); }
@@ -1427,6 +1431,8 @@ window.addEventListener('error', (e) => vscode.postMessage({ type: 'error', mess
 let repos = [];
 let loading = true;
 let agents = {};
+let terminals = [];
+let sentOrder = null;
 const commitFiles = {};
 const pendingCommitFiles = new Set();
 const state = vscode.getState() || { collapsed: {} };
@@ -1589,7 +1595,7 @@ function vendorCell(name) {
 function row(depth, opts) {
   const twist = opts.twist === undefined ? '<span class="twist"></span>'
     : '<span class="twist">' + (opts.twist ? '▸' : '▾') + '</span>';
-  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + '" style="--depth:' + depth + '" data-act="' + esc(opts.act || '') + '">'
+  return '<div class="row ' + (opts.hdr ? 'hdr' : opts.grp ? 'grp' : '') + (opts.cls ? ' ' + opts.cls : '') + '" style="--depth:' + depth + '" data-act="' + esc(opts.act || '') + '">'
     + twist
     + '<span class="name">' + opts.name + '</span>'
     + (opts.tag || '')
@@ -1653,6 +1659,20 @@ function render() {
   const grouped = repos.some((r) => r.group);
   const shown = grouped ? [...repos].sort((a, b) => groupRank(a).localeCompare(groupRank(b))) : repos;
   let h = '';
+  // Terminals without a PR row come first under their own header.
+  const rowPaths = new Set(repos.map((r) => r.repoPath));
+  const loose = terminals.filter((t) => !t.repoPath || !rowPaths.has(t.repoPath));
+  if (loose.length) {
+    const tc = isCollapsed('p|~terminals', false);
+    h += row(0, { grp: true, twist: tc, name: 'terminals (' + loose.length + ')', act: 't|p|~terminals|0' });
+    if (!tc) for (const t of loose) h += row(1, { name: esc(t.name), act: 'x|' + t.key, cls: t.active ? 'term-on' : '' });
+  }
+  // Ctrl+PageDown and Ctrl+PageUp follow the terminals in the order of the rows.
+  const order = [...loose, ...shown.flatMap((r) => terminals.filter((t) => t.repoPath === r.repoPath))].map((t) => t.key);
+  if (JSON.stringify(order) !== sentOrder) {
+    sentOrder = JSON.stringify(order);
+    vscode.postMessage({ type: 'terminalOrder', keys: order });
+  }
   let header = null;
   for (const r of shown) {
     const key = grouped ? groupKey(r) : null;
@@ -1686,6 +1706,10 @@ function render() {
       + '<path d="m3 4 4 4-4 4m6 0h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : '';
     // A PR with a screenshot set opens it in Chrome.
     const shots = r.pr && r.pr.shots;
+    // A PR's terminals show their live mark; a click shows the terminal.
+    const own = terminals.filter((t) => t.repoPath === r.repoPath);
+    const termHtml = own.map((t) => '<span class="term' + (t.active ? ' term-on' : '') + '" data-term="' + esc(t.key)
+      + '" title="' + esc(t.name) + '">' + esc(terminalMark(t.name)) + '</span>').join('');
     const shotsHtml = shots ? '<span class="shots" data-shots="' + esc(r.repoPath) + '" title="'
       + esc('Screenshots of ' + r.name + ': ' + shots.images + (shots.images === 1 ? ' image' : ' images')
         + (shots.taken ? ', taken ' + shots.taken : ''))
@@ -1709,7 +1733,8 @@ function render() {
     }
     const prName = r.pr && /^pr-\\d+$/.test(r.name) ? PR_PREFIX + esc(r.name.slice(3)) : esc(r.name);
     h += row(d, { hdr: true, twist: rc, name: prName, tag: behindHtml + prTag(r.pr, r.ci, r.repoPath), dim: repoDim,
-      btns: claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|' + rd });
+      btns: termHtml + claudeHtml + codexHtml + shotsHtml + agentHtml, cols: repoCols, act: 't|' + rid + '|' + rd,
+      cls: own.some((t) => t.active) ? 'term-on' : '' });
     if (rc) continue;
 
     // A branch lists uncommitted work inside Vs master instead.
@@ -1769,6 +1794,12 @@ function render() {
   root.innerHTML = h;
 }
 
+// The leading mark of a terminal name, such as Claude's ✳ or ◐, or a prompt.
+function terminalMark(name) {
+  const m = /^\\s*([^\\p{L}\\p{N}\\s])/u.exec(name || '');
+  return m ? m[1] : '›_';
+}
+
 document.addEventListener('click', (ev) => {
   const claude = ev.target.closest('.claude');
   if (claude) {
@@ -1788,6 +1819,11 @@ document.addEventListener('click', (ev) => {
   const schema = ev.target.closest('.prst-schema');
   if (schema) {
     vscode.postMessage({ type: 'schema', repoPath: schema.dataset.schema });
+    return;
+  }
+  const term = ev.target.closest('.term');
+  if (term) {
+    vscode.postMessage({ type: 'terminal', key: term.dataset.term });
     return;
   }
   const el = ev.target.closest('.row');
@@ -1811,6 +1847,8 @@ document.addEventListener('click', (ev) => {
       state.collapsed['s|' + id.slice(2) + '|vsmaster'] = false;
     }
     toggle(id, dflt);
+  } else if (type === 'x') {
+    vscode.postMessage({ type: 'terminal', key: rest });
   } else if (type === 'w' || type === 's') {
     const i = rest.indexOf('|');
     vscode.postMessage({ type: 'open', mode: type === 's' ? 'staged' : 'working', repoPath: rest.slice(0, i), path: rest.slice(i + 1) });
@@ -1830,7 +1868,11 @@ window.addEventListener('message', (ev) => {
   } else if (m.type === 'data') {
     loading = !!m.loading;
     agents = m.agents || {};
+    terminals = m.terminals || [];
     repos = m.repos;
+    render();
+  } else if (m.type === 'terminals') {
+    terminals = m.terminals;
     render();
   }
   else if (m.type === 'commitFiles') {
@@ -2715,6 +2757,9 @@ class StatsViewProvider {
     this.data = new Map();
     this.fileStats = new Map();
     this.agents = {};
+    this.terminalList = null; // gives each terminal its key, label and folder
+    this.terminalsSent = null;
+    this.terminalTimer = null;
     this.refreshPromise = null;
     this.refreshPending = false;
     this.loading = true;
@@ -2832,10 +2877,52 @@ class StatsViewProvider {
   push() {
     if (!this.view) return;
     const repos = this.repos.filter((r) => this.data.has(r)).map((r) => this.data.get(r));
+    const terminals = this.terminals();
+    this.terminalsSent = JSON.stringify(terminals);
     this.view.webview.postMessage({
       type: 'data', repos, loading: this.loading,
-      agents: this.agents,
+      agents: this.agents, terminals,
     });
+  }
+
+  // The window's terminals in opening order, each with its label and its PR
+  // row, if any.
+  terminals() {
+    const list = this.terminalList;
+    if (!list) return [];
+    const prs = [...this.data.values()].filter((r) => r.pr);
+    const active = vscode.window.activeTerminal;
+    return vscode.window.terminals.map((t) => {
+      const key = list.track(t), look = list.look(t);
+      return { key, name: look.label, repoPath: terminalPr(t, look, prs), active: t === active };
+    });
+  }
+
+  pushTerminals() {
+    if (!this.view) return;
+    const terminals = this.terminals();
+    const sent = JSON.stringify(terminals);
+    if (sent === this.terminalsSent) return;
+    this.terminalsSent = sent;
+    this.view.webview.postMessage({ type: 'terminals', terminals });
+  }
+
+  // Only a visible view compares the terminals and reads their tmux pane
+  // titles each second.
+  watchTerminals(view) {
+    const tick = () => {
+      if (this.terminalList) this.terminalList.readPanes(() => this.pushTerminals());
+      this.pushTerminals();
+    };
+    const visibility = () => {
+      clearInterval(this.terminalTimer);
+      this.terminalTimer = null;
+      if (!view.visible) return;
+      tick();
+      this.terminalTimer = setInterval(tick, TERMINAL_NAMES_MS);
+    };
+    if (view.onDidChangeVisibility) view.onDidChangeVisibility(visibility);
+    visibility();
   }
 
   resolveWebviewView(view) {
@@ -2844,6 +2931,7 @@ class StatsViewProvider {
     const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
     view.webview.html = getHtml(nonce);
     view.webview.onDidReceiveMessage((m) => this.onMessage(m));
+    this.watchTerminals(view);
   }
 
   async onMessage(m) {
@@ -2860,6 +2948,12 @@ class StatsViewProvider {
       const files = parseNumstat(numOut).map((f) => ({ ...f, letter: letters[f.path] || 'M' }));
       await markLineVendors(m.repoPath, m.hash + '^', m.hash, files, vendorDeclarations(m.repoPath), new Map());
       if (this.view) this.view.webview.postMessage({ type: 'commitFiles', repoPath: m.repoPath, hash: m.hash, files });
+    } else if (m.type === 'terminal') {
+      const list = this.terminalList;
+      const terminal = list && vscode.window.terminals.find((t) => list.ids.get(t) === m.key);
+      if (terminal) terminal.show();
+    } else if (m.type === 'terminalOrder') {
+      if (this.terminalList && Array.isArray(m.keys)) this.terminalList.order = m.keys.filter((k) => typeof k === 'string');
     } else if (m.type === 'claude') {
       const repo = this.data.get(m.repoPath);
       if (!repo || !repo.pr) return;
@@ -2960,17 +3054,12 @@ class StatsViewProvider {
   }
 }
 
-// The window's terminals below Minion HQ, so the terminal panel can hide its
-// own tab list. A click shows the terminal, and the active terminal stays
-// selected. Rows offer the tab list's actions, and drag and drop orders them;
-// VS Code gives extensions no way to reorder its terminals, so the view keeps
-// its own order. VS Code reports no title change to extensions, so a visible
-// list compares its rows each second.
+// The window's terminals in the Minion HQ rows, so the terminal panel can hide
+// its own tab list. TerminalList gives each terminal its key, label and folder;
+// StatsViewProvider places it in a PR row. VS Code reports no title change to
+// extensions, so a visible Minion HQ view compares the terminals each second.
 const TERMINAL_NAMES_MS = 1000;
-// The view's drag data, and the workspace state key of its saved order.
-const TERMINAL_MIME = 'application/vnd.code.tree.scmdiffstatsterminals';
-const TERMINAL_ORDER_KEY = 'terminalOrder';
-// The fields of a tmux pane that a row shows; the title comes last, as it may hold tabs.
+// The fields of a tmux pane that a label shows; the title comes last, as it may hold tabs.
 const TMUX_PANE_FORMAT = '#{session_name}\t#{pane_id}\t#{window_active}#{pane_active}\t#{pane_current_path}\t#{pane_title}';
 
 // The tmux pane that a tmux client attaches, from its command line: the socket
@@ -2981,172 +3070,37 @@ function tmuxAttachOf(argv) {
   const t = argv.indexOf('-t', at);
   return at > 0 && t > at && argv[t + 1] ? { socket: argv.slice(1, at), target: argv[t + 1] } : null;
 }
-// A title that starts with a busy glyph, such as Claude's ◐ while it works.
-const TERMINAL_BUSY = /^[◐-◓⠀-⣿]/;
-// The tab list's actions that VS Code runs on the active terminal.
-const TERMINAL_ACTIONS = [
-  ['split', 'workbench.action.terminal.split'],
-  ['changeColor', 'workbench.action.terminal.changeColor'],
-  ['changeIcon', 'workbench.action.terminal.changeIcon'],
-  ['rename', 'workbench.action.terminal.rename'],
-  ['sizeToContentWidth', 'workbench.action.terminal.sizeToContentWidth'],
-  ['moveToEditor', 'workbench.action.terminal.moveToEditor'],
-  ['moveIntoNewWindow', 'workbench.action.terminal.moveIntoNewWindow'],
-  ['unsplit', 'workbench.action.terminal.unsplit'],
-];
 
 class TerminalList {
-  constructor(memento) {
-    this.emitter = new vscode.EventEmitter();
-    this.onDidChangeTreeData = this.emitter.event;
-    this.dragMimeTypes = [TERMINAL_MIME];
-    this.dropMimeTypes = [TERMINAL_MIME];
-    this.memento = memento;
-    this.saved = [...((memento && memento.get(TERMINAL_ORDER_KEY)) || [])]; // row keys in the saved order
-    this.keys = new Map(); // each row's keys at the last ordering
-    this.firstNames = new WeakMap();
-    this.nonces = new WeakMap(); // the VSCODE_NONCE of each terminal's process, or ''
-    this.drawn = new WeakMap(); // what each terminal's row shows
+  constructor() {
     this.pids = new WeakMap();
     this.attaches = new WeakMap(); // the tmux pane that a terminal's own process attaches, or null
     this.panes = new Map(); // socket arguments + '\n' + target → { title, cwd }
     this.reading = false;
     this.ids = new WeakMap();
     this.count = 0;
-    this.view = null;
-    this.timer = null;
+    this.order = []; // the terminal keys in the order the Minion HQ rows show them
   }
 
-  getChildren(element) {
-    return element ? [] : this.rows();
-  }
-
-  // The keys that find a terminal again after VS Code restored it: the claude
-  // tmux session it shows or in whose folder its shell waits, so Minion HQ
-  // attaches the session at its place again, and the VSCODE_NONCE of its
-  // process, which VS Code gives a restored process again. A terminal without
-  // either has its first name as key.
-  baseKeys(terminal) {
-    let session = tmuxTerminals.get(terminal), cwd = '';
-    const pid = this.pids.get(terminal);
-    if (!session && pid) {
-      try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
-      if (path.dirname(cwd) === tmuxMarks()) session = path.basename(cwd);
+  // A terminal's key; the first call also asks for its process id.
+  track(terminal) {
+    if (!this.ids.has(terminal)) this.ids.set(terminal, 'terminal-' + ++this.count);
+    if (!this.pids.has(terminal)) {
+      this.pids.set(terminal, 0);
+      Promise.resolve(terminal.processId).then((pid) => this.pids.set(terminal, pid || 0), () => {});
     }
-    if (pid && !this.nonces.has(terminal)) {
-      let env = '';
-      try { env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch {}
-      const nonce = env.split('\0').find((v) => v.startsWith('VSCODE_NONCE='));
-      this.nonces.set(terminal, nonce ? nonce.slice('VSCODE_NONCE='.length) : '');
-    }
-    const keys = [];
-    if (session) keys.push('tmux:' + session);
-    if (this.nonces.get(terminal)) keys.push('nonce:' + this.nonces.get(terminal));
-    if (keys.length) return keys;
-    if (!this.firstNames.get(terminal)) {
-      this.firstNames.set(terminal, (terminal.creationOptions && terminal.creationOptions.name) || terminal.name);
-    }
-    return ['name:' + (this.firstNames.get(terminal) || '')];
+    return this.ids.get(terminal);
   }
 
-  // The rows in the saved order; terminals without a saved place follow in the
-  // order they opened. Terminals with the same key count on, so each row has
-  // its own keys. A row with a saved place saves a new key of it there, such
-  // as the tmux session of a shell that started Claude.
-  rows() {
-    const seen = new Map();
-    const keyed = vscode.window.terminals.map((terminal, i) => {
-      const keys = this.baseKeys(terminal).map((base) => {
-        const n = (seen.get(base) || 0) + 1;
-        seen.set(base, n);
-        return n > 1 ? base + '#' + n : base;
-      });
-      return { terminal, keys, i };
-    });
-    let added = false;
-    for (const k of keyed) {
-      const at = Math.max(...k.keys.map((key) => this.saved.indexOf(key)));
-      const missing = k.keys.filter((key) => !this.saved.includes(key));
-      if (at >= 0 && missing.length) {
-        this.saved.splice(at + 1, 0, ...missing);
-        added = true;
-      }
-    }
-    if (added) this.save(this.saved);
-    for (const k of keyed) {
-      const ranks = k.keys.map((key) => this.saved.indexOf(key)).filter((rank) => rank >= 0);
-      k.rank = ranks.length ? Math.min(...ranks) : Infinity;
-    }
-    keyed.sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
-    this.keys = new Map(keyed.map((k) => [k.terminal, k.keys]));
-    return keyed.map((k) => k.terminal);
-  }
-
-  save(saved) {
-    this.saved = saved;
-    if (this.memento) Promise.resolve(this.memento.update(TERMINAL_ORDER_KEY, saved)).catch(() => {});
-  }
-
-  // The keys of these rows in their order, for the saved order. The key of a
-  // claude tmux session without a terminal keeps its place, so Minion HQ
-  // attaches the session there again; other keys without a row are dropped.
-  order(rows) {
-    const next = rows.flatMap((t) => this.keys.get(t) || []);
-    let after = -1;
-    for (const key of this.saved) {
-      const at = next.indexOf(key);
-      if (at >= 0) after = at;
-      else if (key.startsWith('tmux:')) next.splice(++after, 0, key);
-    }
-    return next;
-  }
-
-  // When a terminal closes, the saved keys of claude tmux sessions that ended
-  // are dropped, so a new session that gets such a name comes last. VS Code
-  // closes the terminals of the window when it ends, but the sessions live.
-  prune() {
-    const tmux = agentExecutable('tmux');
-    if (!tmux || !this.saved.some((key) => key.startsWith('tmux:'))) return;
-    cp.execFile(tmux, ['-L', 'claude', 'list-sessions', '-F', '#{session_name}'], { env: process.env, timeout: 3000 }, (err, stdout, stderr) => {
-      if (err && !/no server running|error connecting/.test(String(stderr || ''))) return;
-      const live = new Set(err ? [] : String(stdout).split('\n'));
-      const kept = this.saved.filter((key) => !key.startsWith('tmux:') || live.has(key.slice(5).replace(/#\d+$/, '')));
-      if (kept.length < this.saved.length) {
-        this.save(kept);
-        this.refresh();
-      }
-    });
-  }
-
-  handleDrag(source, dataTransfer) {
-    dataTransfer.set(TERMINAL_MIME, new vscode.DataTransferItem(source));
-  }
-
-  // Dropped rows take the place of the row they fall on: below it when they
-  // came from above, else above it. Dropped on the empty space, they go last.
-  handleDrop(target, dataTransfer) {
-    const item = dataTransfer.get(TERMINAL_MIME);
-    const rows = this.rows();
-    const moved = rows.filter((t) => item && Array.isArray(item.value) && item.value.includes(t));
-    if (!moved.length || moved.includes(target)) return;
-    const rest = rows.filter((t) => !moved.includes(t));
-    let at = target ? rest.indexOf(target) : rest.length;
-    if (target && rows.indexOf(moved[0]) < rows.indexOf(target)) at++;
-    rest.splice(at, 0, ...moved);
-    this.save(this.order(rest));
-    this.refresh();
-  }
-
-  // Ctrl+PageDown and Ctrl+PageUp in a terminal follow the rows.
+  // Ctrl+PageDown and Ctrl+PageUp in a terminal follow the terminals in the
+  // order the Minion HQ rows show them, then the others in opening order.
   focusNext(step) {
-    const rows = this.rows();
+    const all = vscode.window.terminals;
+    const shown = this.order.map((key) => all.find((t) => this.ids.get(t) === key)).filter(Boolean);
+    const rows = [...shown, ...all.filter((t) => !shown.includes(t))];
     if (!rows.length) return;
     const at = rows.indexOf(vscode.window.activeTerminal);
     rows[at < 0 ? (step > 0 ? 0 : rows.length - 1) : (at + step + rows.length) % rows.length].show();
-  }
-
-  getParent() {
-    return undefined;
   }
 
   // The tmux pane that a terminal shows: the claude tmux session that the agent
@@ -3165,12 +3119,11 @@ class TerminalList {
     return this.attaches.get(terminal);
   }
 
-  // A row of a terminal that shows a tmux pane shows the pane's title and
-  // folder: VS Code names a terminal that it restored after its process, or
-  // not at all, until a title with «Claude Code» arrives, and a tmux server
-  // without set-titles sends no title. Another row shows the terminal's name,
-  // or its process name when the name is empty, and the folder its process
-  // runs in, like the tab list.
+  // A terminal that shows a tmux pane has the pane's title and folder: VS Code
+  // names a terminal that it restored after its process, or not at all, until
+  // a title with «Claude Code» arrives, and a tmux server without set-titles
+  // sends no title. Another terminal has its name, or its process name when
+  // the name is empty, and the folder its process runs in.
   look(terminal) {
     const shown = this.paneOf(terminal);
     const pane = shown && this.panes.get(shown.socket.join(' ') + '\n' + shown.target);
@@ -3180,13 +3133,12 @@ class TerminalList {
       if (!cwd) try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
       if (!label) try { label = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim(); } catch {}
     }
-    return { label: label || 'terminal', cwd, busy: TERMINAL_BUSY.test(label) };
+    return { label: label || 'terminal', cwd };
   }
 
-  // Read the panes of each tmux socket that a row shows, with one tmux call
-  // per socket, then redraw the changed rows. A read that still runs skips
-  // the next one.
-  readPanes() {
+  // Read the panes of each tmux socket that a terminal shows, with one tmux
+  // call per socket, then call done. A read that still runs skips the next one.
+  readPanes(done = () => {}) {
     const sockets = new Map();
     for (const terminal of vscode.window.terminals) {
       const shown = this.paneOf(terminal);
@@ -3209,114 +3161,42 @@ class TerminalList {
         if (--left) return;
         this.panes = panes;
         this.reading = false;
-        this.compareNames();
+        done();
       });
     }
-  }
-
-  tick() {
-    this.compareNames();
-    this.readPanes();
-  }
-
-  getTreeItem(terminal) {
-    if (!this.ids.has(terminal)) this.ids.set(terminal, 'terminal-' + ++this.count);
-    if (!this.pids.has(terminal)) {
-      this.pids.set(terminal, 0);
-      Promise.resolve(terminal.processId).then((pid) => {
-        this.pids.set(terminal, pid || 0);
-        // The pid can give the row its saved place, so the whole list redraws.
-        if (pid && vscode.window.terminals.includes(terminal)) this.refresh();
-      }, () => {});
-    }
-    const look = this.look(terminal);
-    this.drawn.set(terminal, JSON.stringify(look));
-    const item = new vscode.TreeItem(look.label);
-    item.id = this.ids.get(terminal);
-    item.description = look.cwd && path.basename(look.cwd);
-    item.iconPath = new vscode.ThemeIcon(look.busy ? 'loading~spin' : 'terminal');
-    item.tooltip = [look.label, look.cwd].filter(Boolean).join('\n');
-    item.command = { command: 'scmDiffStats.showTerminal', title: 'Show Terminal', arguments: [terminal] };
-    return item;
-  }
-
-  refresh() {
-    this.emitter.fire(undefined);
-  }
-
-  compareNames() {
-    const changed = vscode.window.terminals.filter((t) => this.drawn.has(t) && this.drawn.get(t) !== JSON.stringify(this.look(t)));
-    if (changed.length) this.emitter.fire(changed);
-  }
-
-  selectActive() {
-    const active = vscode.window.activeTerminal;
-    if (!this.view || !this.view.visible || !active) return;
-    Promise.resolve(this.view.reveal(active, { select: true, focus: false })).catch(() => {});
-  }
-
-  // The rows an action applies to: the selection that holds the clicked row,
-  // the clicked row, or, from a key, the selection.
-  targets(terminal, selected) {
-    if (Array.isArray(selected) && selected.includes(terminal)) return [...selected];
-    if (terminal) return [terminal];
-    return this.view ? [...this.view.selection] : [];
-  }
-
-  // Run a tab list action on a row's terminal: VS Code runs it on the active
-  // terminal, so the row's terminal is shown first. If it does not become
-  // active within a second, nothing runs, so no other terminal gets the action.
-  async run(terminal, command) {
-    if (!terminal) return;
-    if (vscode.window.activeTerminal !== terminal) {
-      const active = new Promise((resolve) => {
-        const done = () => { clearTimeout(timer); listener.dispose(); resolve(); };
-        const listener = vscode.window.onDidChangeActiveTerminal((t) => { if (t === terminal) done(); });
-        const timer = setTimeout(done, 1000);
-      });
-      terminal.show();
-      await active;
-    }
-    if (vscode.window.activeTerminal === terminal) await vscode.commands.executeCommand(command);
-  }
-
-  // Only a visible list compares rows and follows the active terminal.
-  watch(view) {
-    this.view = view;
-    const visibility = () => {
-      clearInterval(this.timer);
-      this.timer = null;
-      if (!view.visible) return;
-      this.tick();
-      this.timer = setInterval(() => this.tick(), TERMINAL_NAMES_MS);
-      this.selectActive();
-    };
-    visibility();
-    return [view.onDidChangeVisibility(visibility), { dispose: () => clearInterval(this.timer) }];
   }
 
   commands() {
     return [
-      vscode.commands.registerCommand('scmDiffStats.showTerminal', (terminal) => terminal && terminal.show()),
       vscode.commands.registerCommand('scmDiffStats.terminal.focusNext', () => this.focusNext(1)),
       vscode.commands.registerCommand('scmDiffStats.terminal.focusPrevious', () => this.focusNext(-1)),
-      vscode.commands.registerCommand('scmDiffStats.terminal.kill',
-        (terminal, selected) => this.targets(terminal, selected).forEach((t) => t.dispose())),
-      ...TERMINAL_ACTIONS.map(([name, command]) => vscode.commands.registerCommand('scmDiffStats.terminal.' + name,
-        (terminal, selected) => this.run(this.targets(terminal, selected)[0], command))),
     ];
   }
 }
 
+// The PR row of a terminal: the PR whose Claude or Codex control opened it,
+// whose number its label starts with, as scripts/rename-session titles a PR's
+// session, or in whose worktree it runs.
+function terminalPr(terminal, look, prs) {
+  const env = (terminal.creationOptions && terminal.creationOptions.env) || {};
+  const opened = env.MINION_HQ_CLAUDE_PR || env.MINION_HQ_CODEX_PR;
+  if (opened && prs.some((r) => r.repoPath === opened)) return opened;
+  const m = /^[^\p{L}\p{N}]*(?:(?:claude|codex)\s+)?pr[- ]?(\d+)\b/iu.exec(look.label || '');
+  const named = m && prs.find((r) => r.pr.serial === +m[1]);
+  if (named) return named.repoPath;
+  const home = look.cwd && prs.find((r) => look.cwd === r.repoPath || look.cwd.startsWith(r.repoPath + '/'));
+  return home ? home.repoPath : null;
+}
+
 function activate(context) {
-  const terminalList = new TerminalList(context.workspaceState);
-  const terminalView = vscode.window.createTreeView('scmDiffStatsTerminals',
-    { treeDataProvider: terminalList, dragAndDropController: terminalList, canSelectMany: true });
-  context.subscriptions.push(terminalView, ...terminalList.watch(terminalView), ...terminalList.commands(),
-    vscode.window.onDidOpenTerminal(() => terminalList.refresh()),
-    vscode.window.onDidCloseTerminal(() => { terminalList.refresh(); terminalList.prune(); }),
-    vscode.window.onDidChangeActiveTerminal(() => terminalList.selectActive()));
+  const terminalList = new TerminalList();
   const provider = new StatsViewProvider();
+  provider.terminalList = terminalList;
+  context.subscriptions.push(...terminalList.commands(),
+    vscode.window.onDidOpenTerminal(() => provider.pushTerminals()),
+    vscode.window.onDidCloseTerminal(() => provider.pushTerminals()),
+    vscode.window.onDidChangeActiveTerminal(() => provider.pushTerminals()),
+    { dispose: () => clearInterval(provider.terminalTimer) });
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('scmDiffStats', provider));
   vscode.commands.executeCommand('setContext', 'scmDiffStats.loading', provider.loading);
   context.subscriptions.push(vscode.commands.registerCommand('scmDiffStats.loading', () => {}));

@@ -329,70 +329,41 @@ Claude sessions at their tab places:
 - The `Minion HQ` output channel logs each change of the record and, at
   activation, each session attached, resumed or not resumed with the reason.
 
-## Terminals view
+## Terminals in rows
 
-The `Terminals` view below Minion HQ lists every terminal of the window, also
-plain shells, in the order of the view (see Order below). Each row shows the terminal's live name, or the name of its
-process when the name is empty, and as description the folder its process runs
-in, read from `/proc`. A row whose terminal shows a tmux pane shows the pane's
-title and, as description, the pane's folder instead: VS Code names a terminal
-that it restored after its process, or not at all, until a title with «Claude
-Code» arrives, and a tmux server without `set-titles` sends no title. Such a
-terminal is a claude tmux session that the agent scan finds below the
-terminal's process, or a pane that the terminal's own process attaches with
-`tmux attach-session` on any socket, read from its `/proc` command line. A
-visible view reads these panes with one `tmux list-panes -a` for each socket
-each second; a read that still runs skips the next one. A label that starts
-with a busy glyph (`◐`–`◓` or a
-Braille spinner) gets a spinning icon, other rows a terminal icon. A click
-shows the terminal and gives it focus. While the view is visible, the row of
-the active terminal is selected without focus; a hidden view never opens
-itself. VS Code reports no name change to extensions, so a visible view
-compares each row's name, folder and icon each second and redraws only changed
-rows; a hidden view runs no timer.
+The Minion HQ rows show every terminal of the window, also plain shells, so the
+terminal panel can hide its own tab list. A terminal belongs to a PR row when
+that row's Claude or Codex control opened it, when its label starts with the
+PR number, such as `✳ pr-7 …` or `Claude pr-7`, or when its folder is in the
+PR worktree. A PR row shows a mark for each of its terminals before the Claude
+control: the first symbol of the label, such as `✳` or `◐`, or `›_`; the
+tooltip holds the label. Other terminals come first, in opening order, under a
+collapsible `terminals (N)` group, each in a row with its label. A click on a
+mark or a terminal row shows the terminal and gives it focus. The active
+terminal's mark has an outline, and its PR row or terminal row is highlighted.
 
-Rows replace the tab list's own controls. Hover shows Split and Kill. The
-context menu holds Split, Change Color, Change Icon, Rename, Toggle Size to
-Content Width, Move into Editor Area, Move into New Window, Unsplit and Kill.
-In the focused view, F2 renames and Delete kills. Kill applies to every
-selected row when the clicked row is selected; another action applies to the
-clicked row. VS Code runs these actions on the active terminal, so the row's
-terminal is shown first, and the action runs only after it became active,
-within one second. The API gives no split group, colour or icon of a
-terminal, so the view cannot show split groups, or a colour or icon that
-Change Color or Change Icon set.
-
-Order: drag and drop moves rows, also several selected rows, which keep their
-order. Rows dropped on a row take its place: below it when they came from
-above, else above it. Rows dropped on the empty space go last. VS Code gives
-extensions no way to reorder its terminals, so the view keeps its own order in
-the workspace state `terminalOrder` as a list of row keys, saved at each drop.
-A row has the key `tmux:<session>` when its terminal shows a claude tmux
-session or its process waits in that session's folder, and the key
-`nonce:<VSCODE_NONCE>` of its process: VS Code starts a restored process with
-the nonce of the old one. A row without either has the key `name:` and its
-creation name or the first name the view saw. The second and later rows with
-one key add `#2`, `#3` and so on. A row takes the first saved place of its
-keys, also after VS Code restored the terminals, and a terminal that Minion HQ
-opens for a claude tmux session takes the session's place. Rows without a
-saved key follow in the order the terminals opened, so a new terminal comes
-last. A row with a saved place saves a new key at that place, such as the
-session of a shell that starts Claude. A drop keeps the key of a claude tmux
-session that has no terminal, and drops the other keys without a row. When a
-terminal closes, the keys of claude tmux sessions that `tmux -L claude
-list-sessions` no longer lists are dropped, so a new session that gets such a
-name comes last; without a tmux server every session has ended, and another
-tmux error drops nothing. A process id that arrives later redraws the whole
-list, as it can give the row its place.
+A terminal's label is its name, or the name of its process when the name is
+empty, and its folder is the folder its process runs in, read from `/proc`. A
+terminal that shows a tmux pane has the pane's title and folder instead: VS
+Code names a terminal that it restored after its process, or not at all, until
+a title with «Claude Code» arrives, and a tmux server without `set-titles`
+sends no title. Such a terminal is a claude tmux session that the agent scan
+finds below the terminal's process, or a pane that the terminal's own process
+attaches with `tmux attach-session` on any socket, read from its `/proc`
+command line. VS Code reports no name change to extensions, so a visible
+Minion HQ view compares the terminals and reads these panes with one `tmux
+list-panes -a` for each socket each second, and posts only a change; a read
+that still runs skips the next one. A hidden view runs no timer.
 
 Minion HQ contributes the default `false` for
 `terminal.integrated.tabs.enabled`, so the terminal panel hides its own tab
-list from the same start that shows the view, and the terminal gets its width;
-a user or Machine setting overrides it. In a terminal of the panel, Ctrl+PageDown
-and Ctrl+PageUp (Cmd+Shift+] and Cmd+Shift+[ on a Mac) run Minion HQ's `Focus
-Next Terminal` and `Focus Previous Terminal`, which replace VS Code's group
-commands on these keys: they show the next or previous row's terminal, and
-wrap around. Without an active terminal they start at the first or last row.
+list, and the terminal gets its width; a user or Machine setting overrides it.
+In a terminal of the panel, Ctrl+PageDown and Ctrl+PageUp (Cmd+Shift+] and
+Cmd+Shift+[ on a Mac) run Minion HQ's `Focus Next Terminal` and `Focus Previous
+Terminal`, which replace VS Code's group commands on these keys: they show the
+next or previous terminal in the order of the rows, then the terminals that the
+rows do not show yet in opening order, and wrap around. Without an active
+terminal they start at the first or last terminal.
 
 ## Background Claude sessions
 

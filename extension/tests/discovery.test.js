@@ -25,7 +25,6 @@ function start(groups, initial, { deferred = false, excluded = [] } = {}) {
       onDidOpenTerminal: disposable,
       onDidCloseTerminal: disposable,
       onDidChangeActiveTerminal: disposable,
-      createTreeView: () => ({ visible: false, onDidChangeVisibility: disposable, dispose() {} }),
       registerWebviewViewProvider: (id, value) => { provider = value; return disposable(); },
       registerFileDecorationProvider: disposable,
     },

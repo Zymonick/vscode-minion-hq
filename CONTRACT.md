@@ -367,13 +367,23 @@ order. Rows dropped on a row take its place: below it when they came from
 above, else above it. Rows dropped on the empty space go last. VS Code gives
 extensions no way to reorder its terminals, so the view keeps its own order in
 the workspace state `terminalOrder` as a list of row keys, saved at each drop.
-A row's key is `tmux:<session>` for a terminal that shows a claude tmux
-session or whose process waits in that session's folder, else `name:` and its
-creation name or the first name the view saw; the second and later terminals
-with one key add `#2`, `#3` and so on. Rows with a saved key take their saved
-places, also after VS Code restored the terminals; the others follow in the
-order the terminals opened, so a new terminal comes last. A process id that
-arrives later redraws the whole list, as it can give the row its place.
+A row has the key `tmux:<session>` when its terminal shows a claude tmux
+session or its process waits in that session's folder, and the key
+`nonce:<VSCODE_NONCE>` of its process: VS Code starts a restored process with
+the nonce of the old one. A row without either has the key `name:` and its
+creation name or the first name the view saw. The second and later rows with
+one key add `#2`, `#3` and so on. A row takes the first saved place of its
+keys, also after VS Code restored the terminals, and a terminal that Minion HQ
+opens for a claude tmux session takes the session's place. Rows without a
+saved key follow in the order the terminals opened, so a new terminal comes
+last. A row with a saved place saves a new key at that place, such as the
+session of a shell that starts Claude. A drop keeps the key of a claude tmux
+session that has no terminal, and drops the other keys without a row. When a
+terminal closes, the keys of claude tmux sessions that `tmux -L claude
+list-sessions` no longer lists are dropped, so a new session that gets such a
+name comes last; without a tmux server every session has ended, and another
+tmux error drops nothing. A process id that arrives later redraws the whole
+list, as it can give the row its place.
 
 Minion HQ contributes the default `false` for
 `terminal.integrated.tabs.enabled`, so the terminal panel hides its own tab

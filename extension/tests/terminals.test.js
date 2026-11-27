@@ -263,6 +263,25 @@ function drag(list, rows) {
   return data;
 }
 const names = (rows) => [...rows].map((t) => t.name);
+// An fs stub with the /proc entries of these pids: pid → { cwd, environ }.
+function procFs(proc) {
+  const entry = (file, field) => {
+    const m = /^\/proc\/(\d+)\/(\w+)$/.exec(file);
+    if (!m || !proc[m[1]]) return undefined;
+    if (m[2] !== field || proc[m[1]][field] === undefined) throw Object.assign(new Error('ENOENT ' + file), { code: 'ENOENT' });
+    return proc[m[1]][field];
+  };
+  return { ...fs,
+    readFileSync: (file, ...rest) => {
+      const environ = entry(file, /\/environ$/.test(file) ? 'environ' : '');
+      return environ === undefined ? fs.readFileSync(file, ...rest) : environ.join('\0') + '\0';
+    },
+    readlinkSync: (file, ...rest) => {
+      const cwd = entry(file, 'cwd');
+      return cwd === undefined ? fs.readlinkSync(file, ...rest) : cwd;
+    },
+  };
+}
 
 test('dragging rows orders the view: onto a row they take its place, onto the empty space they go last', () => {
   const state = memento();
@@ -288,31 +307,93 @@ test('dragging rows orders the view: onto a row they take its place, onto the em
   assert.deepEqual(names(f.list.getChildren()), ['b', '◐ a renamed', 'd', 'c', 'e'], 'a renamed terminal keeps its place');
 });
 
-test('the order survives a restart: restored terminals find their keys, also equal names and claude tmux sessions', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-home-'));
-  const was = process.env.HOME;
-  process.env.HOME = home;
-  const folder = path.join(home, '.local', 'state', 'claude-tmux', 'claude-kylie-3');
-  fs.mkdirSync(folder, { recursive: true });
-  const child = spawn('sleep', ['30'], { cwd: folder });
-  t.after(() => { child.kill(); process.env.HOME = was; fs.rmSync(home, { recursive: true, force: true }); });
+test('the order survives a restart: restored terminals find their keys by the VSCODE_NONCE of their process or their claude tmux session', async () => {
+  // VS Code starts a restored process with the nonce of the old one, also
+  // when it restores the terminals in another order and with other names.
+  const marks = path.join(process.env.HOME || '', '.local', 'state', 'claude-tmux');
+  const proc = {
+    5001: { cwd: '/home/u/kylie', environ: ['PATH=/bin', 'VSCODE_NONCE=n1'] },
+    5002: { cwd: '/home/u/kylie', environ: ['VSCODE_NONCE=n2'] },
+    5003: { cwd: path.join(marks, 'claude-kylie-3'), environ: ['VSCODE_NONCE=n3'] },
+  };
+  proc[6001] = proc[5001]; proc[6002] = proc[5002]; proc[6003] = proc[5003];
   const state = memento();
-  const before = fixture({}, state);
-  const shell1 = before.terminal('bash'), shell2 = before.terminal('bash'), local = before.terminal('x', { creationOptions: { name: 'bash local' } });
-  const claude = before.terminal('◐ pr-1316 working', { processId: Promise.resolve(child.pid) });
+  const before = fixture({ fs: procFs(proc) }, state);
+  const shell1 = before.terminal('bash', { processId: Promise.resolve(5001) });
+  const shell2 = before.terminal('bash', { processId: Promise.resolve(5002) });
+  const local = before.terminal('x', { creationOptions: { name: 'bash local' } });
+  const claude = before.terminal('◐ pr-1316 working', { processId: Promise.resolve(5003) });
   before.vscode.window.terminals.push(shell1, shell2, local, claude);
   before.list.getChildren().forEach((row) => before.list.getTreeItem(row));
   await new Promise((resolve) => setImmediate(resolve));
   before.list.handleDrop(shell1, drag(before.list, [claude, shell2]));
-  assert.deepEqual(state.store.terminalOrder, ['name:bash#2', 'tmux:claude-kylie-3', 'name:bash', 'name:bash local']);
+  assert.deepEqual(state.store.terminalOrder, ['nonce:n2', 'tmux:claude-kylie-3', 'nonce:n3', 'nonce:n1', 'name:bash local']);
 
-  const after = fixture({}, state);
-  const restored = [after.terminal(''), after.terminal('bash local'), after.terminal('bash', { id: 1 }), after.terminal('bash', { id: 2 })];
-  restored[0].processId = Promise.resolve(child.pid);
+  const after = fixture({ fs: procFs(proc) }, state);
+  const restored = [after.terminal('', { processId: Promise.resolve(6003) }), after.terminal('bash local'),
+    after.terminal('ssh', { processId: Promise.resolve(6002) }), after.terminal('bash', { processId: Promise.resolve(6001) })];
   after.vscode.window.terminals.push(...restored);
   restored.forEach((row) => after.list.getTreeItem(row));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual([...after.list.getChildren()], [restored[3], restored[0], restored[2], restored[1]]);
+  assert.deepEqual([...after.list.getChildren()], [restored[2], restored[0], restored[3], restored[1]]);
+});
+
+test('a shell that starts Claude keeps its place, its session gets the place again in a new terminal, and an ended session leaves its place', async (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-tmux-'));
+  fs.writeFileSync(path.join(bin, 'tmux'), '', { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = bin;
+  t.after(() => { process.env.PATH = PATH; fs.rmSync(bin, { recursive: true, force: true }); });
+  const marks = path.join(process.env.HOME || '', '.local', 'state', 'claude-tmux');
+  const proc = {
+    5001: { cwd: '/home/u/kylie', environ: ['VSCODE_NONCE=n1'] },
+    5002: { cwd: '/home/u', environ: ['VSCODE_NONCE=n2'] },
+    5003: { cwd: path.join(marks, 'claude-kylie-5'), environ: ['VSCODE_NONCE=n3'] },
+    5004: { cwd: path.join(marks, 'claude-kylie-5'), environ: ['VSCODE_NONCE=n4'] },
+    5005: { cwd: path.join(marks, 'claude-kylie-6'), environ: ['VSCODE_NONCE=n5'] },
+  };
+  const calls = [];
+  let reply = [null, 'claude-kylie-5\n', ''];
+  const execFile = (file, args, options, done) => { calls.push(args.join(' ')); done(...reply); };
+  const state = memento();
+  const f = fixture({ fs: procFs(proc), child_process: { ...require('node:child_process'), execFile } }, state);
+  const open = async (...rows) => {
+    f.vscode.window.terminals.push(...rows);
+    rows.forEach((row) => f.list.getTreeItem(row));
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  const close = (...rows) => {
+    for (const row of rows) f.vscode.window.terminals.splice(f.vscode.window.terminals.indexOf(row), 1);
+    f.list.prune();
+  };
+  const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map((n, i) => f.terminal(n, { processId: Promise.resolve(5001 + i) }));
+  await open(a, b, c);
+  f.list.handleDrop(a, drag(f.list, [c]));
+  assert.deepEqual(names(f.list.getChildren()), ['c', 'a', 'b']);
+
+  proc[5001].cwd = path.join(marks, 'claude-kylie-6');
+  assert.deepEqual(names(f.list.getChildren()), ['c', 'a', 'b'], 'a shell that starts Claude keeps its place');
+  assert.deepEqual(state.store.terminalOrder, ['tmux:claude-kylie-5', 'nonce:n3', 'nonce:n1', 'tmux:claude-kylie-6', 'nonce:n2']);
+
+  reply = [null, 'claude-kylie-6\n', ''];
+  close(c, a);
+  assert.deepEqual(calls, ['-L claude list-sessions -F #{session_name}']);
+  assert.deepEqual(state.store.terminalOrder, ['nonce:n3', 'nonce:n1', 'tmux:claude-kylie-6', 'nonce:n2'],
+    'the ended session of c leaves its place; the session of a lives without a terminal');
+  await open(d);
+  assert.deepEqual(names(f.list.getChildren()), ['b', 'd'], 'a new session with the name of an ended one comes last');
+  f.list.handleDrop(b, drag(f.list, [d]));
+  assert.deepEqual(state.store.terminalOrder, ['tmux:claude-kylie-6', 'tmux:claude-kylie-5', 'nonce:n4', 'nonce:n2'],
+    'a drop keeps the place of a live session without a terminal');
+  await open(e);
+  assert.deepEqual(names(f.list.getChildren()), ['e', 'd', 'b'], 'Minion HQ attaches the session of a at its place');
+
+  reply = [Object.assign(new Error('timeout'), { killed: true }), '', ''];
+  f.list.prune();
+  assert.equal(state.store.terminalOrder.length, 5, 'a failed tmux call drops nothing');
+  reply = [Object.assign(new Error('exit 1'), { code: 1 }), '', 'no server running on /tmp/tmux-1000/claude\n'];
+  f.list.prune();
+  assert.deepEqual(state.store.terminalOrder, ['nonce:n5', 'nonce:n4', 'nonce:n2'], 'without a tmux server, every session ended');
 });
 
 test('Ctrl+PageDown and Ctrl+PageUp in a terminal follow the rows and wrap around', () => {

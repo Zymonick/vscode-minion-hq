@@ -3002,9 +3002,10 @@ class TerminalList {
     this.dragMimeTypes = [TERMINAL_MIME];
     this.dropMimeTypes = [TERMINAL_MIME];
     this.memento = memento;
-    this.saved = (memento && memento.get(TERMINAL_ORDER_KEY)) || []; // row keys in the order of the last drop
-    this.keys = new Map(); // each row's key at the last ordering
+    this.saved = [...((memento && memento.get(TERMINAL_ORDER_KEY)) || [])]; // row keys in the saved order
+    this.keys = new Map(); // each row's keys at the last ordering
     this.firstNames = new WeakMap();
+    this.nonces = new WeakMap(); // the VSCODE_NONCE of each terminal's process, or ''
     this.drawn = new WeakMap(); // what each terminal's row shows
     this.pids = new WeakMap();
     this.attaches = new WeakMap(); // the tmux pane that a terminal's own process attaches, or null
@@ -3020,38 +3021,101 @@ class TerminalList {
     return element ? [] : this.rows();
   }
 
-  // A key that finds a terminal again after VS Code restored it: the claude
-  // tmux session it shows or in whose folder its shell waits, else its first
-  // name.
-  baseKey(terminal) {
+  // The keys that find a terminal again after VS Code restored it: the claude
+  // tmux session it shows or in whose folder its shell waits, so Minion HQ
+  // attaches the session at its place again, and the VSCODE_NONCE of its
+  // process, which VS Code gives a restored process again. A terminal without
+  // either has its first name as key.
+  baseKeys(terminal) {
     let session = tmuxTerminals.get(terminal), cwd = '';
     const pid = this.pids.get(terminal);
     if (!session && pid) {
       try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
       if (path.dirname(cwd) === tmuxMarks()) session = path.basename(cwd);
     }
-    if (session) return 'tmux:' + session;
+    if (pid && !this.nonces.has(terminal)) {
+      let env = '';
+      try { env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch {}
+      const nonce = env.split('\0').find((v) => v.startsWith('VSCODE_NONCE='));
+      this.nonces.set(terminal, nonce ? nonce.slice('VSCODE_NONCE='.length) : '');
+    }
+    const keys = [];
+    if (session) keys.push('tmux:' + session);
+    if (this.nonces.get(terminal)) keys.push('nonce:' + this.nonces.get(terminal));
+    if (keys.length) return keys;
     if (!this.firstNames.get(terminal)) {
       this.firstNames.set(terminal, (terminal.creationOptions && terminal.creationOptions.name) || terminal.name);
     }
-    return 'name:' + (this.firstNames.get(terminal) || '');
+    return ['name:' + (this.firstNames.get(terminal) || '')];
   }
 
   // The rows in the saved order; terminals without a saved place follow in the
   // order they opened. Terminals with the same key count on, so each row has
-  // its own key.
+  // its own keys. A row with a saved place saves a new key of it there, such
+  // as the tmux session of a shell that started Claude.
   rows() {
     const seen = new Map();
     const keyed = vscode.window.terminals.map((terminal, i) => {
-      const base = this.baseKey(terminal), n = (seen.get(base) || 0) + 1;
-      seen.set(base, n);
-      const key = n > 1 ? base + '#' + n : base;
-      const rank = this.saved.indexOf(key);
-      return { terminal, key, i, rank: rank < 0 ? Infinity : rank };
+      const keys = this.baseKeys(terminal).map((base) => {
+        const n = (seen.get(base) || 0) + 1;
+        seen.set(base, n);
+        return n > 1 ? base + '#' + n : base;
+      });
+      return { terminal, keys, i };
     });
+    let added = false;
+    for (const k of keyed) {
+      const at = Math.max(...k.keys.map((key) => this.saved.indexOf(key)));
+      const missing = k.keys.filter((key) => !this.saved.includes(key));
+      if (at >= 0 && missing.length) {
+        this.saved.splice(at + 1, 0, ...missing);
+        added = true;
+      }
+    }
+    if (added) this.save(this.saved);
+    for (const k of keyed) {
+      const ranks = k.keys.map((key) => this.saved.indexOf(key)).filter((rank) => rank >= 0);
+      k.rank = ranks.length ? Math.min(...ranks) : Infinity;
+    }
     keyed.sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
-    this.keys = new Map(keyed.map((k) => [k.terminal, k.key]));
+    this.keys = new Map(keyed.map((k) => [k.terminal, k.keys]));
     return keyed.map((k) => k.terminal);
+  }
+
+  save(saved) {
+    this.saved = saved;
+    if (this.memento) Promise.resolve(this.memento.update(TERMINAL_ORDER_KEY, saved)).catch(() => {});
+  }
+
+  // The keys of these rows in their order, for the saved order. The key of a
+  // claude tmux session without a terminal keeps its place, so Minion HQ
+  // attaches the session there again; other keys without a row are dropped.
+  order(rows) {
+    const next = rows.flatMap((t) => this.keys.get(t) || []);
+    let after = -1;
+    for (const key of this.saved) {
+      const at = next.indexOf(key);
+      if (at >= 0) after = at;
+      else if (key.startsWith('tmux:')) next.splice(++after, 0, key);
+    }
+    return next;
+  }
+
+  // When a terminal closes, the saved keys of claude tmux sessions that ended
+  // are dropped, so a new session that gets such a name comes last. VS Code
+  // closes the terminals of the window when it ends, but the sessions live.
+  prune() {
+    const tmux = agentExecutable('tmux');
+    if (!tmux || !this.saved.some((key) => key.startsWith('tmux:'))) return;
+    cp.execFile(tmux, ['-L', 'claude', 'list-sessions', '-F', '#{session_name}'], { env: process.env, timeout: 3000 }, (err, stdout, stderr) => {
+      if (err && !/no server running|error connecting/.test(String(stderr || ''))) return;
+      const live = new Set(err ? [] : String(stdout).split('\n'));
+      const kept = this.saved.filter((key) => !key.startsWith('tmux:') || live.has(key.slice(5).replace(/#\d+$/, '')));
+      if (kept.length < this.saved.length) {
+        this.save(kept);
+        this.refresh();
+      }
+    });
   }
 
   handleDrag(source, dataTransfer) {
@@ -3069,8 +3133,7 @@ class TerminalList {
     let at = target ? rest.indexOf(target) : rest.length;
     if (target && rows.indexOf(moved[0]) < rows.indexOf(target)) at++;
     rest.splice(at, 0, ...moved);
-    this.saved = rest.map((t) => this.keys.get(t));
-    if (this.memento) Promise.resolve(this.memento.update(TERMINAL_ORDER_KEY, this.saved)).catch(() => {});
+    this.save(this.order(rest));
     this.refresh();
   }
 
@@ -3251,7 +3314,7 @@ function activate(context) {
     { treeDataProvider: terminalList, dragAndDropController: terminalList, canSelectMany: true });
   context.subscriptions.push(terminalView, ...terminalList.watch(terminalView), ...terminalList.commands(),
     vscode.window.onDidOpenTerminal(() => terminalList.refresh()),
-    vscode.window.onDidCloseTerminal(() => terminalList.refresh()),
+    vscode.window.onDidCloseTerminal(() => { terminalList.refresh(); terminalList.prune(); }),
     vscode.window.onDidChangeActiveTerminal(() => terminalList.selectActive()));
   const provider = new StatsViewProvider();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('scmDiffStats', provider));

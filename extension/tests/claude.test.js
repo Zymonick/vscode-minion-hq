@@ -47,10 +47,10 @@ function fixture(t) {
     JSON.stringify({ pid, sessionId, cwd: workspace, procStart: start, entrypoint: 'cli' }));
 
   const created = [], shown = [], infos = [], errors = [], logged = [], openListeners = [];
-  const sent = [];
+  const sent = [], disposed = [];
   const terminal = (name, pid, exitStatus) => ({ name, exitStatus, creationOptions: { name },
     processId: Promise.resolve(pid), show(preserveFocus) { shown.push(this.name + (pid ? ' @' + pid : '') + (preserveFocus ? ' (no focus)' : '')); },
-    sendText(text) { sent.push(`${this.name}: ${text}`); } });
+    sendText(text) { sent.push(`${this.name}: ${text}`); }, dispose() { disposed.push(this); } });
   const vscode = {
     window: {
       terminals: [],
@@ -94,7 +94,7 @@ function fixture(t) {
   const attach = (name) => ({ cwd: path.join(home, '.local', 'state', 'claude-tmux', name), shellPath: tmux,
     shellArgs: ['-L', 'claude', 'attach-session', '-t', '=' + name] });
   return { ...api, provider, repo, workspace, claude, tmux, env, sessions, session, live, terminal, attach,
-    tmuxState, tmuxCalls, child, openListeners, terminals: vscode.window.terminals, created, shown, sent, infos, errors, logged,
+    tmuxState, tmuxCalls, child, openListeners, terminals: vscode.window.terminals, created, shown, sent, disposed, infos, errors, logged,
     click: () => provider.onMessage({ type: 'claude', repoPath: repo }) };
 }
 
@@ -483,7 +483,7 @@ test('a session whose folder a restored terminal waits in is neither attached no
 
 test('the restoring window opens bash local and bash prd first, once each', (t) => {
   const f = fixture(t);
-  f.openShellTerminals();
+  f.openShellTerminals(10);
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'bash local' },
     { name: 'bash prd', shellPath: '/bin/bash', shellArgs: ['-ic', 'ssh prd; exec bash'] }]);
   assert.deepEqual(f.sent, [], 'the prd shell starts ssh itself, also when VS Code restores it');
@@ -491,8 +491,32 @@ test('the restoring window opens bash local and bash prd first, once each', (t) 
   assert.deepEqual(f.logged, ['shell restore: opened bash local', 'shell restore: opened bash prd']);
   f.created.length = 0;
   f.terminals.push(f.terminal('bash prd'));
-  f.openShellTerminals();
+  f.openShellTerminals(10);
   assert.deepEqual(JSON.parse(JSON.stringify(f.created)), [{ name: 'bash local' }], 'a reconnected shell is kept');
+});
+
+test('a shell that VS Code reconnects after the restore closes the new shell of its name', async (t) => {
+  const f = fixture(t);
+  f.openShellTerminals(200);
+  const [own] = f.openListeners;
+  own({ name: 'claude' });
+  assert.deepEqual(f.disposed, [], 'another terminal closes nothing');
+  const earlier = f.terminal('bash prd');
+  own(earlier);
+  assert.equal(f.disposed.length, 1);
+  assert.notEqual(f.disposed[0], earlier, 'the reconnected shell stays');
+  assert.equal(f.disposed[0].creationOptions.shellPath, '/bin/bash', 'the new prd shell closes');
+  assert.equal(f.logged.at(-1), 'shell restore: closed the new bash prd, VS Code reconnected the earlier one');
+  own(f.terminal('bash prd'));
+  assert.equal(f.disposed.length, 1, 'a later shell of the same name closes nothing more');
+  own(f.terminal('bash local'));
+  assert.equal(f.disposed.length, 2);
+  assert.equal(f.openListeners.length, 0, 'with both shells settled, the watch stops');
+
+  const g = fixture(t);
+  g.openShellTerminals(20);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(g.openListeners.length, 0, 'the watch ends after its time');
 });
 
 test('closing a terminal yourself ends the tmux session it shows; a closing window does not', async (t) => {

@@ -327,7 +327,10 @@ Claude sessions at their tab places:
   VS Code restored nothing in. `bash local` opens in the default profile and
   shows the panel without focus. `bash prd` runs `bash -ic 'ssh prd; exec
   bash'`, so it connects again when VS Code restores it. A shell that a
-  terminal of the window has by name stays as it is. The Machine setting
+  terminal of the window has by name stays as it is. VS Code can reconnect
+  the shells of an earlier window some seconds after the terminals settled,
+  as after a lost connection. For one minute, such a shell closes the new
+  shell of its name, so each shell stays once. The Machine setting
   `terminal.integrated.hideOnStartup` `whenEmpty` of business-operations
   `agent-config` stops VS Code's own default terminal ahead of them. VS Code
   restores other plain shells at their places, with a new process.

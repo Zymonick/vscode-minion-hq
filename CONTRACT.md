@@ -329,8 +329,10 @@ Claude sessions at their tab places:
   bash'`, so it connects again when VS Code restores it. A shell that a
   terminal of the window has by name stays as it is. VS Code can reconnect
   the shells of an earlier window some seconds after the terminals settled,
-  as after a lost connection. For one minute, such a shell closes the new
-  shell of its name, so each shell stays once. The Machine setting
+  as after a lost connection, and give them their names only later. For one
+  minute, Minion HQ compares the names each second: a shell of the window
+  with the name of a new shell closes the new one, so each shell stays once.
+  The Machine setting
   `terminal.integrated.hideOnStartup` `whenEmpty` of business-operations
   `agent-config` stops VS Code's own default terminal ahead of them. VS Code
   restores other plain shells at their places, with a new process.

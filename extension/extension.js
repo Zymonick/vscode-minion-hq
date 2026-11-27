@@ -2265,12 +2265,15 @@ const SHELL_TERMINALS = [{ name: 'bash local' },
   { name: 'bash prd', shellPath: '/bin/bash', shellArgs: ['-ic', 'ssh prd; exec bash'] }];
 
 const SHELL_RECONNECT_MS = 60000;
+const SHELL_RECONNECT_CHECK_MS = 1000;
 
 // Each shell that no terminal of this window has by name opens; the local one
 // opens in the default profile and shows the panel without focus. VS Code can
 // reconnect the shells of an earlier window after the terminals settled; such
-// a shell closes the new one of its name, so each shell stays once.
-function openShellTerminals(watch = SHELL_RECONNECT_MS) {
+// a shell closes the new one of its name, so each shell stays once. VS Code
+// names a reconnected terminal only after it opened, and no event reports the
+// name, so the names are compared each second.
+function openShellTerminals(watch = SHELL_RECONNECT_MS, every = SHELL_RECONNECT_CHECK_MS) {
   const opened = new Map();
   for (const shell of SHELL_TERMINALS) {
     if (vscode.window.terminals.some((t) => t.name === shell.name)) continue;
@@ -2280,16 +2283,17 @@ function openShellTerminals(watch = SHELL_RECONNECT_MS) {
     log(`shell restore: opened ${shell.name}`);
   }
   if (!opened.size) return;
-  const stop = () => { clearTimeout(timer); listener.dispose(); };
-  const listener = vscode.window.onDidOpenTerminal((t) => {
-    const own = opened.get(t.name);
-    if (!own || own === t) return;
-    opened.delete(t.name);
-    own.dispose();
-    log(`shell restore: closed the new ${t.name}, VS Code reconnected the earlier one`);
+  const stop = () => { clearInterval(check); clearTimeout(end); };
+  const check = setInterval(() => {
+    for (const [name, own] of opened) {
+      if (!vscode.window.terminals.some((t) => t !== own && t.name === name)) continue;
+      opened.delete(name);
+      own.dispose();
+      log(`shell restore: closed the new ${name}, VS Code reconnected the earlier one`);
+    }
     if (!opened.size) stop();
-  });
-  const timer = setTimeout(stop, watch);
+  }, every);
+  const end = setTimeout(stop, watch);
 }
 
 // A terminal that starts claude in an interactive shell, whose claude function

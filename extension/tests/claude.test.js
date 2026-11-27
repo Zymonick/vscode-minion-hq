@@ -73,7 +73,7 @@ function fixture(t) {
     TerminalExitReason: { Unknown: 0, Shutdown: 1, Process: 2, User: 3, Extension: 4 },
   };
   const env = { ...process.env, HOME: home, PATH: bin };
-  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, claudeSessions, nextRestoreRecord, restoreClaudeSessions, markedTmuxSessions, terminalsSettled, openShellTerminals, claudeSessionWatch, attachBackgroundSessions, claudeTmux, claimRestore, readRestoreRecord, writeRestoreRecord, mapTmuxTerminals, closeClaudeTmux });', {
+  const api = vm.runInNewContext(source + '\n({ StatsViewProvider, getHtml, claudeTerminalSessions, claudeSessions, nextRestoreRecord, restoreClaudeSessions, markedTmuxSessions, terminalsSettled, openShellTerminals, claudeSessionWatch, attachBackgroundSessions, closeLeftAttachTerminals, claudeTmux, claimRestore, readRestoreRecord, writeRestoreRecord, mapTmuxTerminals, closeClaudeTmux });', {
     module: { exports: {} }, Buffer, setTimeout, clearTimeout, setInterval, clearInterval,
     process: Object.assign(Object.create(process), { env }),
     require: (name) => name === 'vscode' ? vscode : require(name),
@@ -592,13 +592,18 @@ test('a terminal that opens or starts a command is scanned each second for 15 se
   assert.equal(scans, 19);
 });
 
-test('a new background session of the workspace opens once in a focused attach terminal', (t) => {
+test('a new /fork-pr background session of the workspace opens once in a focused attach terminal', (t) => {
   const f = fixture(t);
   const record = (pid, fields) => fs.writeFileSync(path.join(f.sessions, pid + '.json'), JSON.stringify({
     pid, procStart: procStart(process.pid), entrypoint: 'cli', cwd: f.workspace, startedAt: 2000, ...fields }));
-  record(process.pid, { kind: 'bg', sessionId: '3fc61690-94a5-4734-aecc-85db7e5b042d', jobId: '3fc61690' });
-  record(1, { kind: 'bg', sessionId: 'aaaaaaaa-0000-4000-8000-000000000000' }); // another process start
+  record(process.pid, { kind: 'bg', sessionId: '3fc61690-94a5-4734-aecc-85db7e5b042d', jobId: '3fc61690',
+    name: 'fix the till (Branch)' });
+  record(1, { kind: 'bg', sessionId: 'aaaaaaaa-0000-4000-8000-000000000000', name: 'x (Branch)' }); // another process start
   record(process.ppid, { kind: 'interactive', sessionId: 'bbbbbbbb-0000-4000-8000-000000000000' });
+  // Simon moved this session to the background, or started it in `claude agents`.
+  const own = spawnChild(t, 'attach');
+  record(own.pid, { kind: 'bg', sessionId: 'cccccccc-0000-4000-8000-000000000000', procStart: procStart(own.pid),
+    name: 'pr-1357 invoice [landed] bank proposal details' });
   const attached = new Set();
   f.attachBackgroundSessions(attached, 3000);
   assert.deepEqual(f.created, [], 'a session started before the window activated stays detached');
@@ -609,4 +614,34 @@ test('a new background session of the workspace opens once in a focused attach t
   ]);
   assert.deepEqual(f.shown, ['claude']);
   assert.deepEqual(f.logged, [`claude attach: opened 3fc61690 in ${f.workspace}`]);
+});
+
+// A process whose command line is `<node> <word>`, as `claude attach <id>` turns
+// into `claude agents` when Simon types /exit or ←.
+function spawnChild(t, word) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-child-'));
+  fs.writeFileSync(path.join(dir, word), 'setTimeout(() => {}, 60000);\n');
+  const child = require('node:child_process').spawn(process.execPath, [word], { cwd: dir, stdio: 'ignore' });
+  t.after(() => { child.kill(); fs.rmSync(dir, { recursive: true, force: true }); });
+  return child;
+}
+
+test('an attach terminal closes when its view leaves the session for the agent view', async (t) => {
+  const f = fixture(t);
+  const record = (pid, id) => fs.writeFileSync(path.join(f.sessions, pid + '.json'), JSON.stringify({
+    pid, procStart: procStart(pid), entrypoint: 'cli', cwd: f.workspace, startedAt: 2000, kind: 'bg',
+    sessionId: id + '-0000-4000-8000-000000000000', jobId: id, name: id + ' (Branch)' }));
+  const viewing = spawnChild(t, 'attach'), left = spawnChild(t, 'agents');
+  await Promise.all([viewing, left].map((c) => new Promise((resolve) => c.once('spawn', resolve))));
+  record(viewing.pid, '11111111');
+  record(left.pid, '22222222');
+  f.attachBackgroundSessions(new Set(), 1000);
+  assert.equal(f.made.length, 2);
+  const byJob = (job) => f.made.find((m) => m.creationOptions.shellArgs[1] === job);
+  byJob('11111111').processId = Promise.resolve(viewing.pid);
+  byJob('22222222').processId = Promise.resolve(left.pid);
+  await f.closeLeftAttachTerminals();
+  await f.closeLeftAttachTerminals();
+  assert.deepEqual(f.disposed, [byJob('22222222')], 'only the terminal that shows the agent view closes');
+  assert.ok(f.logged.includes('claude attach: closed 22222222, its terminal left the session'));
 });

@@ -412,10 +412,16 @@ or last terminal. Without another idle terminal they change nothing.
 `claude --bg`, as `/fork-pr` runs it, starts a Claude session without a
 terminal. The agent scan opens each such session that starts in a workspace
 folder after the window activates in a new focused terminal, which runs
-`claude attach <job id>` in the session's folder. Each session opens once per
+`claude attach <job id>` in the session's folder. Only a session whose name
+ends with ` (Branch)` opens: Kylie's `scripts/fork-session` gives each fork
+that name until the fork creates its PR. A session that Simon moved to the
+background, as with «Move to background and exit» of `/exit`, or started in
+`claude agents`, stays detached. Each session opens once per
 window; a session that started earlier, or whose process start time does not
-match its record, stays detached. The `Minion HQ` output channel logs each
-opened session.
+match its record, stays detached. `/exit` or ← in `claude attach` keeps the
+session running and turns the process into `claude agents`, whose prompt
+starts a new session. Within one second, Minion HQ then closes that attach
+terminal. The `Minion HQ` output channel logs each opened and closed session.
 
 ## User-run CI requests
 

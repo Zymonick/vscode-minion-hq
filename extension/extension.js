@@ -2604,6 +2604,12 @@ function restoreClaudeSessions(recorded, tmux, marked = new Set()) {
 // `claude --bg` (/fork-pr) starts a session without a terminal. Each one that
 // starts in a workspace folder after the window activates opens once, in a new
 // focused terminal that runs `claude attach <job id>` in the session's folder.
+// Only a /fork-pr session opens: Kylie's scripts/fork-session names it with
+// FORK_NAME_SUFFIX until it creates its PR. A session that Simon moved to the
+// background or started in `claude agents` already has his attention there.
+const FORK_NAME_SUFFIX = ' (Branch)';
+const attachTerminals = new Set(); // the attach terminals that this window opened
+
 function attachBackgroundSessions(attached, since) {
   const dir = path.join(process.env.HOME || '', '.claude', 'sessions');
   const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
@@ -2614,6 +2620,7 @@ function attachBackgroundSessions(attached, since) {
     try {
       meta = JSON.parse(fs.readFileSync(path.join(dir, name)));
       if (meta.kind !== 'bg' || attached.has(meta.sessionId) || !(meta.startedAt >= since)) continue;
+      if (typeof meta.name !== 'string' || !meta.name.endsWith(FORK_NAME_SUFFIX)) continue;
       if (!folders.some((f) => meta.cwd === f || meta.cwd.startsWith(f + path.sep))) continue;
       if (procStat(meta.pid).start !== String(meta.procStart)) continue;
     } catch { continue; /* not a session record, or its process has exited */ }
@@ -2621,8 +2628,30 @@ function attachBackgroundSessions(attached, since) {
     if (!claude) return log('claude attach: the claude CLI is not on PATH or in ~/.local/bin');
     attached.add(meta.sessionId);
     const job = meta.jobId || meta.sessionId.slice(0, 8);
-    vscode.window.createTerminal({ cwd: meta.cwd, shellPath: claude, shellArgs: ['attach', job] }).show();
+    const terminal = vscode.window.createTerminal({ cwd: meta.cwd, shellPath: claude, shellArgs: ['attach', job] });
+    attachTerminals.add(terminal);
+    terminal.show();
     log(`claude attach: opened ${job} in ${meta.cwd}`);
+  }
+}
+
+// `/exit` or ← in `claude attach` leaves the session running in the background
+// and turns the process into `claude agents`, whose prompt starts a new session
+// with what Simon types. Its terminal closes then, as the terminal of an ended
+// interactive session does.
+async function closeLeftAttachTerminals() {
+  for (const terminal of attachTerminals) {
+    if (terminal.exitStatus) {
+      attachTerminals.delete(terminal);
+      continue;
+    }
+    const pid = await terminal.processId;
+    let args;
+    try { args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); } catch { continue; }
+    if (args[1] !== 'agents') continue;
+    attachTerminals.delete(terminal);
+    terminal.dispose();
+    log(`claude attach: closed ${terminal.creationOptions.shellArgs[1]}, its terminal left the session`);
   }
 }
 
@@ -3583,6 +3612,9 @@ function activate(context) {
     takeUserRunRequests();
   }, 7000);
   context.subscriptions.push({ dispose: () => clearInterval(agentPoll) });
+  // Each second, so that a terminal closes before Simon types into the agent view.
+  const attachPoll = setInterval(() => { if (attachTerminals.size) closeLeftAttachTerminals(); }, 1000);
+  context.subscriptions.push({ dispose: () => clearInterval(attachPoll) });
   // A terminal that opens, or a command that starts in one, may be claude.
   const watch = claudeSessionWatch(recordClaudeSessions);
   context.subscriptions.push(watch, vscode.window.onDidOpenTerminal(watch.start),

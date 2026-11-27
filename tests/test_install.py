@@ -67,6 +67,7 @@ class InstallTests(unittest.TestCase):
 
     def run_install(self, cli=None):
         with mock.patch.object(install, 'window_installers', return_value=self.windows), \
+                mock.patch.object(install, 'cli_env', return_value=None), \
                 mock.patch.object(install.subprocess, 'run', side_effect=cli or self.fake_cli), \
                 contextlib.redirect_stdout(io.StringIO()):
             install.install('/fake/code with spaces', self.vsix, self.home)
@@ -100,7 +101,7 @@ class InstallTests(unittest.TestCase):
             self.run_install(lambda *args, **kwargs: None)
 
     def test_installed_code_must_match_tested_package(self):
-        def cli(command, check):
+        def cli(command, check, env=None):
             self.fake_cli(command, check)
             (self.extensions / ('simon.scm-diff-stats-' + self.version) / 'extension.js').write_text('old code')
 
@@ -117,7 +118,7 @@ class InstallTests(unittest.TestCase):
     def test_failed_cli_stops_installation(self):
         self.add_profile()
 
-        def cli(command, check):
+        def cli(command, check, env=None):
             self.calls.append(command)
             raise subprocess.CalledProcessError(7, command)
 
@@ -169,6 +170,31 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0][0], str(cli))
         self.assertTrue(result[0][1]['VSCODE_IPC_HOOK_CLI'].endswith('vscode-ipc-minion.sock'))
+
+    def test_a_closed_window_socket_gives_way_to_the_newest_live_one(self):
+        runtime = self.home / 'runtime'
+        runtime.mkdir()
+        sockets = {}
+        for name, age in [('old', 30), ('new', 10), ('closed', 0)]:
+            path = runtime / ('vscode-ipc-' + name + '.sock')
+            sock = socket.socket(socket.AF_UNIX)
+            self.addCleanup(sock.close)
+            sock.bind(str(path))
+            if name != 'closed':
+                sock.listen()
+            os.utime(path, (1000 - age, 1000 - age))
+            sockets[name] = str(path)
+        environ = {'XDG_RUNTIME_DIR': str(runtime), 'OTHER': 'kept'}
+        self.assertEqual(install.cli_env(environ), environ, 'no window socket: the CLI decides')
+        live = {**environ, 'VSCODE_IPC_HOOK_CLI': sockets['old']}
+        self.assertEqual(install.cli_env(live), live, 'a live socket stays')
+        for gone in [sockets['closed'], str(runtime / 'vscode-ipc-removed.sock')]:
+            env = install.cli_env({**environ, 'VSCODE_IPC_HOOK_CLI': gone})
+            self.assertEqual(env, {**environ, 'VSCODE_IPC_HOOK_CLI': sockets['new']})
+        for path in sockets.values():
+            os.unlink(path)
+        with self.assertRaisesRegex(RuntimeError, 'No running VS Code window'):
+            install.cli_env({**environ, 'VSCODE_IPC_HOOK_CLI': sockets['closed']})
 
     def test_another_extension_is_refused_before_installation(self):
         with zipfile.ZipFile(self.vsix, 'w') as package:

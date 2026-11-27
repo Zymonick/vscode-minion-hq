@@ -555,7 +555,10 @@ server profile registry and the live window CLI for named profiles; the
 headless WSL launcher does not select them. Only use window connections that
 already report Minion HQ installed. Inactive profiles must be opened before
 retrying a deployment that cannot update them. Resolve profile names from VS Code metadata before
-installation; missing names fail deployment. Use the VS Code CLI for all writes.
+installation; missing names fail deployment. Use the VS Code CLI for all writes. A shell that
+outlived its window, such as a Claude session in tmux, names the closed CLI
+socket of that window; the CLI then uses the newest socket that a running window
+serves, and without one deployment fails.
 Verify each target profile registers the released version and its installed
 files match the tested package, excluding only installer-added manifest metadata.
 An existing version directory alone does not prove installation.

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import zipfile
@@ -94,6 +95,32 @@ def window_installers(home):
     return result
 
 
+def connectable(path):
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(1)
+        try:
+            sock.connect(path)
+        except OSError:
+            return False
+    return True
+
+
+def cli_env(environ):
+    """A shell that outlived its window, such as a Claude session in tmux, names
+    the closed socket of that window; use the newest socket a window still serves."""
+    env = dict(environ)
+    hook = env.get('VSCODE_IPC_HOOK_CLI')
+    if not hook or connectable(hook):
+        return env
+    runtime = Path(env.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
+    hooks = sorted(runtime.glob('vscode-ipc-*.sock'), key=lambda path: path.stat().st_mtime, reverse=True)
+    live = next((str(path) for path in hooks if connectable(str(path))), None)
+    if not live:
+        raise RuntimeError('No running VS Code window serves the CLI; open the Kylie window, then retry deployment')
+    env['VSCODE_IPC_HOOK_CLI'] = live
+    return env
+
+
 def install(code, vsix, home):
     extensions, profiles = targets(home)
     with zipfile.ZipFile(vsix) as package:
@@ -103,7 +130,8 @@ def install(code, vsix, home):
         version = manifest['version']
         # The headless launcher installs Default. Named WSL profiles must use
         # their running window's CLI connection; --profile is silently ignored.
-        subprocess.run([str(code), '--install-extension', str(vsix.resolve()), '--force'], check=True)
+        subprocess.run([str(code), '--install-extension', str(vsix.resolve()), '--force'], check=True,
+                       env=cli_env(os.environ))
         if len(profiles) > 1 and extensions.parent.name == '.vscode-server':
             installers = window_installers(home)
             if not installers:

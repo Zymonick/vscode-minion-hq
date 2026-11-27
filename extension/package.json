@@ -2,7 +2,7 @@
   "name": "scm-diff-stats",
   "displayName": "Minion HQ",
   "description": "A command center for your worktrees, diffs, and branch tools.",
-  "version": "0.13.71",
+  "version": "0.13.72",
   "icon": "media/minion-hq.png",
   "publisher": "simon",
   "engines": {
@@ -95,6 +95,14 @@
         "command": "scmDiffStats.terminal.kill",
         "title": "Kill Terminal",
         "icon": "$(trash)"
+      },
+      {
+        "command": "scmDiffStats.terminal.focusNext",
+        "title": "Minion HQ: Focus Next Terminal in the Terminals View"
+      },
+      {
+        "command": "scmDiffStats.terminal.focusPrevious",
+        "title": "Minion HQ: Focus Previous Terminal in the Terminals View"
       },
       {
         "command": "scmDiffStats.refresh",
@@ -240,6 +248,18 @@
         "key": "delete",
         "mac": "cmd+backspace",
         "when": "focusedView == scmDiffStatsTerminals"
+      },
+      {
+        "command": "scmDiffStats.terminal.focusNext",
+        "key": "ctrl+pagedown",
+        "mac": "cmd+shift+]",
+        "when": "terminalFocus && !terminalEditorFocus"
+      },
+      {
+        "command": "scmDiffStats.terminal.focusPrevious",
+        "key": "ctrl+pageup",
+        "mac": "cmd+shift+[",
+        "when": "terminalFocus && !terminalEditorFocus"
       }
     ],
     "configurationDefaults": {

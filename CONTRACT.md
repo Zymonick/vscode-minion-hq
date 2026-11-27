@@ -332,8 +332,7 @@ Claude sessions at their tab places:
 ## Terminals view
 
 The `Terminals` view below Minion HQ lists every terminal of the window, also
-plain shells, in the order VS Code gives extensions: the order in which the
-terminals opened. Each row shows the terminal's live name, or the name of its
+plain shells, in the order of the view (see Order below). Each row shows the terminal's live name, or the name of its
 process when the name is empty, and as description the folder its process runs
 in, read from `/proc`. A row whose terminal shows a tmux pane shows the pane's
 title and, as description, the pane's folder instead: VS Code names a terminal
@@ -359,15 +358,31 @@ In the focused view, F2 renames and Delete kills. Kill applies to every
 selected row when the clicked row is selected; another action applies to the
 clicked row. VS Code runs these actions on the active terminal, so the row's
 terminal is shown first, and the action runs only after it became active,
-within one second. The API gives no reorder, split-group, colour or icon of a
-terminal, so the view cannot drag rows, show split groups, or show a colour or
-icon that Change Color or Change Icon set.
+within one second. The API gives no split group, colour or icon of a
+terminal, so the view cannot show split groups, or a colour or icon that
+Change Color or Change Icon set.
+
+Order: drag and drop moves rows, also several selected rows, which keep their
+order. Rows dropped on a row take its place: below it when they came from
+above, else above it. Rows dropped on the empty space go last. VS Code gives
+extensions no way to reorder its terminals, so the view keeps its own order in
+the workspace state `terminalOrder` as a list of row keys, saved at each drop.
+A row's key is `tmux:<session>` for a terminal that shows a claude tmux
+session or whose process waits in that session's folder, else `name:` and its
+creation name or the first name the view saw; the second and later terminals
+with one key add `#2`, `#3` and so on. Rows with a saved key take their saved
+places, also after VS Code restored the terminals; the others follow in the
+order the terminals opened, so a new terminal comes last. A process id that
+arrives later redraws the whole list, as it can give the row its place.
 
 Minion HQ contributes the default `false` for
 `terminal.integrated.tabs.enabled`, so the terminal panel hides its own tab
 list from the same start that shows the view, and the terminal gets its width;
-a user or Machine setting overrides it. VS Code's `Terminal: Focus Next
-Terminal` and `Focus Previous Terminal` still switch terminals.
+a user or Machine setting overrides it. In a terminal of the panel, Ctrl+PageDown
+and Ctrl+PageUp (Cmd+Shift+] and Cmd+Shift+[ on a Mac) run Minion HQ's `Focus
+Next Terminal` and `Focus Previous Terminal`, which replace VS Code's group
+commands on these keys: they show the next or previous row's terminal, and
+wrap around. Without an active terminal they start at the first or last row.
 
 ## Background Claude sessions
 

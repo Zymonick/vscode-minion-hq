@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8
 // The Terminals view with a stub window, commands, tree view and interval
 // timer. A timeout runs at once, after the current microtasks. `modules`
 // replaces Node modules of the extension, such as fs and child_process.
-function fixture(modules = {}) {
+function fixture(modules = {}, memento) {
   const fired = [], revealed = [], shown = [], executed = [], disposed = [], intervals = new Map();
   const commands = new Map(), activeListeners = new Set();
   let nextTimer = 0;
@@ -21,8 +21,9 @@ function fixture(modules = {}) {
   }
   class TreeItem { constructor(label) { this.label = label; } }
   class ThemeIcon { constructor(id) { this.id = id; } }
+  class DataTransferItem { constructor(value) { this.value = value; } }
   const vscode = {
-    EventEmitter, TreeItem, ThemeIcon,
+    EventEmitter, TreeItem, ThemeIcon, DataTransferItem,
     window: {
       terminals: [], activeTerminal: undefined,
       onDidChangeActiveTerminal: (listener) => { activeListeners.add(listener); return { dispose: () => activeListeners.delete(listener) }; },
@@ -50,7 +51,7 @@ function fixture(modules = {}) {
   const view = { visible: false, selection: [], reveal: async (element, options) => { revealed.push([element.name, options]); },
     onDidChangeVisibility: (listener) => { visibility = listener; return { dispose() {} }; } };
   const show = (visible) => { view.visible = visible; visibility(); };
-  const list = new api.TerminalList();
+  const list = new api.TerminalList(memento);
   return { list, vscode, terminal, view, show, fired, revealed, shown, executed, disposed, intervals, commands, activate,
     tmuxTerminals: api.tmuxTerminals, tmuxAttachOf: api.tmuxAttachOf };
 }
@@ -117,7 +118,7 @@ test('a row shows the folder its process runs in, its process name when the name
   f.vscode.window.terminals.push(blank, busy);
   assert.equal(f.list.getTreeItem(blank).label, 'terminal', 'before the pid is known');
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(f.fired.map((v) => [...v]), [[blank]], 'a known pid redraws the row');
+  assert.deepEqual(f.fired, [undefined], 'a known pid redraws the list, as it can give the row its saved place');
   const item = f.list.getTreeItem(blank);
   assert.equal(item.label, 'sleep');
   assert.equal(item.description, path.basename(dir));
@@ -246,5 +247,85 @@ test('the manifest offers the tab list actions on each row, split and kill inlin
   assert.deepEqual(manifest.keybindings.map((k) => [k.key, k.command, k.when]), [
     ['f2', 'scmDiffStats.terminal.rename', 'focusedView == scmDiffStatsTerminals'],
     ['delete', 'scmDiffStats.terminal.kill', 'focusedView == scmDiffStatsTerminals'],
+    ['ctrl+pagedown', 'scmDiffStats.terminal.focusNext', 'terminalFocus && !terminalEditorFocus'],
+    ['ctrl+pageup', 'scmDiffStats.terminal.focusPrevious', 'terminalFocus && !terminalEditorFocus'],
   ]);
+});
+
+// A workspace state stub and a drag data stub.
+function memento() {
+  const store = {};
+  return { store, get: (key) => store[key], update: async (key, value) => { store[key] = JSON.parse(JSON.stringify(value)); } };
+}
+function drag(list, rows) {
+  const data = new Map();
+  list.handleDrag(rows, data);
+  return data;
+}
+const names = (rows) => [...rows].map((t) => t.name);
+
+test('dragging rows orders the view: onto a row they take its place, onto the empty space they go last', () => {
+  const state = memento();
+  const f = fixture({}, state);
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((n) => f.terminal(n));
+  f.vscode.window.terminals.push(a, b, c, d);
+  assert.deepEqual([...f.list.dragMimeTypes], ['application/vnd.code.tree.scmdiffstatsterminals']);
+  assert.deepEqual([...f.list.dropMimeTypes], [...f.list.dragMimeTypes]);
+  f.list.handleDrop(c, drag(f.list, [a]));
+  assert.deepEqual(names(f.list.getChildren()), ['b', 'c', 'a', 'd'], 'a row dragged down goes below the target');
+  f.list.handleDrop(b, drag(f.list, [d]));
+  assert.deepEqual(names(f.list.getChildren()), ['d', 'b', 'c', 'a'], 'a row dragged up goes above the target');
+  f.list.handleDrop(undefined, drag(f.list, [c, d]));
+  assert.deepEqual(names(f.list.getChildren()), ['b', 'a', 'd', 'c'], 'selected rows keep their order and go last');
+  f.list.handleDrop(d, drag(f.list, [d, b]));
+  assert.deepEqual(names(f.list.getChildren()), ['b', 'a', 'd', 'c'], 'a drop onto a dragged row changes nothing');
+  assert.equal(f.fired.filter((v) => v === undefined).length, 3, 'each drop that moves rows redraws the view');
+  assert.deepEqual(state.store.terminalOrder, ['name:b', 'name:a', 'name:d', 'name:c']);
+  const e = f.terminal('e');
+  f.vscode.window.terminals.push(e);
+  assert.deepEqual(names(f.list.getChildren()), ['b', 'a', 'd', 'c', 'e'], 'a new terminal comes last');
+  a.name = '◐ a renamed';
+  assert.deepEqual(names(f.list.getChildren()), ['b', '◐ a renamed', 'd', 'c', 'e'], 'a renamed terminal keeps its place');
+});
+
+test('the order survives a restart: restored terminals find their keys, also equal names and claude tmux sessions', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'minion-home-'));
+  const was = process.env.HOME;
+  process.env.HOME = home;
+  const folder = path.join(home, '.local', 'state', 'claude-tmux', 'claude-kylie-3');
+  fs.mkdirSync(folder, { recursive: true });
+  const child = spawn('sleep', ['30'], { cwd: folder });
+  t.after(() => { child.kill(); process.env.HOME = was; fs.rmSync(home, { recursive: true, force: true }); });
+  const state = memento();
+  const before = fixture({}, state);
+  const shell1 = before.terminal('bash'), shell2 = before.terminal('bash'), local = before.terminal('x', { creationOptions: { name: 'bash local' } });
+  const claude = before.terminal('◐ pr-1316 working', { processId: Promise.resolve(child.pid) });
+  before.vscode.window.terminals.push(shell1, shell2, local, claude);
+  before.list.getChildren().forEach((row) => before.list.getTreeItem(row));
+  await new Promise((resolve) => setImmediate(resolve));
+  before.list.handleDrop(shell1, drag(before.list, [claude, shell2]));
+  assert.deepEqual(state.store.terminalOrder, ['name:bash#2', 'tmux:claude-kylie-3', 'name:bash', 'name:bash local']);
+
+  const after = fixture({}, state);
+  const restored = [after.terminal(''), after.terminal('bash local'), after.terminal('bash', { id: 1 }), after.terminal('bash', { id: 2 })];
+  restored[0].processId = Promise.resolve(child.pid);
+  after.vscode.window.terminals.push(...restored);
+  restored.forEach((row) => after.list.getTreeItem(row));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([...after.list.getChildren()], [restored[3], restored[0], restored[2], restored[1]]);
+});
+
+test('Ctrl+PageDown and Ctrl+PageUp in a terminal follow the rows and wrap around', () => {
+  const f = fixture();
+  const [a, b, c] = ['a', 'b', 'c'].map((n) => f.terminal(n));
+  f.vscode.window.terminals.push(a, b, c);
+  f.list.commands();
+  f.list.handleDrop(a, drag(f.list, [c]));
+  const next = f.commands.get('scmDiffStats.terminal.focusNext'), previous = f.commands.get('scmDiffStats.terminal.focusPrevious');
+  next();
+  assert.equal(f.vscode.window.activeTerminal, c, 'without an active terminal, the first row');
+  next(); next(); next();
+  assert.deepEqual(f.shown, ['c', 'a', 'b', 'c']);
+  previous();
+  assert.equal(f.vscode.window.activeTerminal, b);
 });

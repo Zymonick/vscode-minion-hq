@@ -2960,12 +2960,16 @@ class StatsViewProvider {
   }
 }
 
-// The window's terminals below Minion HQ, in the order they opened, so the
-// terminal panel can hide its own tab list. A click shows the terminal, and the
-// active terminal stays selected. Rows offer the tab list's actions. VS Code
-// reports no title change to extensions, so a visible list compares its rows
-// each second.
+// The window's terminals below Minion HQ, so the terminal panel can hide its
+// own tab list. A click shows the terminal, and the active terminal stays
+// selected. Rows offer the tab list's actions, and drag and drop orders them;
+// VS Code gives extensions no way to reorder its terminals, so the view keeps
+// its own order. VS Code reports no title change to extensions, so a visible
+// list compares its rows each second.
 const TERMINAL_NAMES_MS = 1000;
+// The view's drag data, and the workspace state key of its saved order.
+const TERMINAL_MIME = 'application/vnd.code.tree.scmdiffstatsterminals';
+const TERMINAL_ORDER_KEY = 'terminalOrder';
 // The fields of a tmux pane that a row shows; the title comes last, as it may hold tabs.
 const TMUX_PANE_FORMAT = '#{session_name}\t#{pane_id}\t#{window_active}#{pane_active}\t#{pane_current_path}\t#{pane_title}';
 
@@ -2992,9 +2996,15 @@ const TERMINAL_ACTIONS = [
 ];
 
 class TerminalList {
-  constructor() {
+  constructor(memento) {
     this.emitter = new vscode.EventEmitter();
     this.onDidChangeTreeData = this.emitter.event;
+    this.dragMimeTypes = [TERMINAL_MIME];
+    this.dropMimeTypes = [TERMINAL_MIME];
+    this.memento = memento;
+    this.saved = (memento && memento.get(TERMINAL_ORDER_KEY)) || []; // row keys in the order of the last drop
+    this.keys = new Map(); // each row's key at the last ordering
+    this.firstNames = new WeakMap();
     this.drawn = new WeakMap(); // what each terminal's row shows
     this.pids = new WeakMap();
     this.attaches = new WeakMap(); // the tmux pane that a terminal's own process attaches, or null
@@ -3007,7 +3017,69 @@ class TerminalList {
   }
 
   getChildren(element) {
-    return element ? [] : [...vscode.window.terminals];
+    return element ? [] : this.rows();
+  }
+
+  // A key that finds a terminal again after VS Code restored it: the claude
+  // tmux session it shows or in whose folder its shell waits, else its first
+  // name.
+  baseKey(terminal) {
+    let session = tmuxTerminals.get(terminal), cwd = '';
+    const pid = this.pids.get(terminal);
+    if (!session && pid) {
+      try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch {}
+      if (path.dirname(cwd) === tmuxMarks()) session = path.basename(cwd);
+    }
+    if (session) return 'tmux:' + session;
+    if (!this.firstNames.get(terminal)) {
+      this.firstNames.set(terminal, (terminal.creationOptions && terminal.creationOptions.name) || terminal.name);
+    }
+    return 'name:' + (this.firstNames.get(terminal) || '');
+  }
+
+  // The rows in the saved order; terminals without a saved place follow in the
+  // order they opened. Terminals with the same key count on, so each row has
+  // its own key.
+  rows() {
+    const seen = new Map();
+    const keyed = vscode.window.terminals.map((terminal, i) => {
+      const base = this.baseKey(terminal), n = (seen.get(base) || 0) + 1;
+      seen.set(base, n);
+      const key = n > 1 ? base + '#' + n : base;
+      const rank = this.saved.indexOf(key);
+      return { terminal, key, i, rank: rank < 0 ? Infinity : rank };
+    });
+    keyed.sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
+    this.keys = new Map(keyed.map((k) => [k.terminal, k.key]));
+    return keyed.map((k) => k.terminal);
+  }
+
+  handleDrag(source, dataTransfer) {
+    dataTransfer.set(TERMINAL_MIME, new vscode.DataTransferItem(source));
+  }
+
+  // Dropped rows take the place of the row they fall on: below it when they
+  // came from above, else above it. Dropped on the empty space, they go last.
+  handleDrop(target, dataTransfer) {
+    const item = dataTransfer.get(TERMINAL_MIME);
+    const rows = this.rows();
+    const moved = rows.filter((t) => item && Array.isArray(item.value) && item.value.includes(t));
+    if (!moved.length || moved.includes(target)) return;
+    const rest = rows.filter((t) => !moved.includes(t));
+    let at = target ? rest.indexOf(target) : rest.length;
+    if (target && rows.indexOf(moved[0]) < rows.indexOf(target)) at++;
+    rest.splice(at, 0, ...moved);
+    this.saved = rest.map((t) => this.keys.get(t));
+    if (this.memento) Promise.resolve(this.memento.update(TERMINAL_ORDER_KEY, this.saved)).catch(() => {});
+    this.refresh();
+  }
+
+  // Ctrl+PageDown and Ctrl+PageUp in a terminal follow the rows.
+  focusNext(step) {
+    const rows = this.rows();
+    if (!rows.length) return;
+    const at = rows.indexOf(vscode.window.activeTerminal);
+    rows[at < 0 ? (step > 0 ? 0 : rows.length - 1) : (at + step + rows.length) % rows.length].show();
   }
 
   getParent() {
@@ -3090,7 +3162,8 @@ class TerminalList {
       this.pids.set(terminal, 0);
       Promise.resolve(terminal.processId).then((pid) => {
         this.pids.set(terminal, pid || 0);
-        if (pid && vscode.window.terminals.includes(terminal)) this.emitter.fire([terminal]);
+        // The pid can give the row its saved place, so the whole list redraws.
+        if (pid && vscode.window.terminals.includes(terminal)) this.refresh();
       }, () => {});
     }
     const look = this.look(terminal);
@@ -3162,6 +3235,8 @@ class TerminalList {
   commands() {
     return [
       vscode.commands.registerCommand('scmDiffStats.showTerminal', (terminal) => terminal && terminal.show()),
+      vscode.commands.registerCommand('scmDiffStats.terminal.focusNext', () => this.focusNext(1)),
+      vscode.commands.registerCommand('scmDiffStats.terminal.focusPrevious', () => this.focusNext(-1)),
       vscode.commands.registerCommand('scmDiffStats.terminal.kill',
         (terminal, selected) => this.targets(terminal, selected).forEach((t) => t.dispose())),
       ...TERMINAL_ACTIONS.map(([name, command]) => vscode.commands.registerCommand('scmDiffStats.terminal.' + name,
@@ -3171,8 +3246,9 @@ class TerminalList {
 }
 
 function activate(context) {
-  const terminalList = new TerminalList();
-  const terminalView = vscode.window.createTreeView('scmDiffStatsTerminals', { treeDataProvider: terminalList, canSelectMany: true });
+  const terminalList = new TerminalList(context.workspaceState);
+  const terminalView = vscode.window.createTreeView('scmDiffStatsTerminals',
+    { treeDataProvider: terminalList, dragAndDropController: terminalList, canSelectMany: true });
   context.subscriptions.push(terminalView, ...terminalList.watch(terminalView), ...terminalList.commands(),
     vscode.window.onDidOpenTerminal(() => terminalList.refresh()),
     vscode.window.onDidCloseTerminal(() => terminalList.refresh()),

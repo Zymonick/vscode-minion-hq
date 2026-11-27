@@ -35,7 +35,7 @@ function fixture() {
   return { ...api, provider, vscode, terminal, view, show, posted, shown, intervals };
 }
 
-test('a terminal belongs to the PR row whose control opened it, whose number its label starts with, or in whose worktree it runs, and is known to run Claude', () => {
+test('a terminal belongs to the PR row whose control opened it, whose number its label starts with, or in whose worktree it runs, and is known to run Claude; a hidden terminal has no row', () => {
   const f = fixture();
   const w = f.vscode.window;
   w.terminals.push(
@@ -47,7 +47,8 @@ test('a terminal belongs to the PR row whose control opened it, whose number its
     f.terminal('✳ pr-9 a PR without a row'),
     f.terminal('notes about pr-7'),
     f.terminal('node', { MINION_HQ_CODEX_PR: '/w/pr-7' }),
-    f.terminal('tmux'));
+    f.terminal('tmux'),
+    { name: 'install', creationOptions: { hideFromUser: true }, show() {} });
   f.tmuxTerminals.set(w.terminals[8], 'claude-kylie-3');
   w.activeTerminal = w.terminals[2];
   assert.deepEqual(plain(f.provider.terminals()).map((t) => [t.name, t.repoPath, t.active, t.claude]), [
@@ -138,4 +139,26 @@ test('PR rows show their terminals, a Claude terminal replaces the Claude contro
   receive({ data: { type: 'terminals', terminals: [{ key: '1', name: 'bash local', repoPath: null, active: true }] } });
   assert.match(root.innerHTML, /<div class="row  term-on" [^>]*data-act="x\|1">/);
   assert.doesNotMatch(root.innerHTML, /class="term/);
+});
+
+test('a publish with unchanged rows leaves the rows in place, so a click during a refresh is not lost', () => {
+  const f = fixture();
+  let html = '', writes = 0, receive;
+  const root = { get innerHTML() { return html; }, set innerHTML(value) { html = value; writes++; } };
+  const script = f.getHtml('N').match(/<script nonce="N">([^]*)<\/script>/)[1];
+  vm.runInNewContext(script, {
+    acquireVsCodeApi: () => ({ getState: () => ({ collapsed: {} }), setState() {}, postMessage() {} }),
+    document: { getElementById: () => root, addEventListener() {} },
+    window: { addEventListener: (type, handler) => { if (type === 'message') receive = handler; } },
+  });
+  const repos = [{ repoPath: '/w/kylie', name: 'kylie', branch: 'master', totals: { add: 0, del: 0 },
+    staged: [], unstaged: [], untracked: [], commits: [], pr: null }];
+  const terminals = [{ key: '1', name: 'bash local', repoPath: null, active: false, claude: false }];
+  receive({ data: { type: 'data', repos, terminals } });
+  receive({ data: { type: 'data', repos, terminals } });
+  receive({ data: { type: 'terminals', terminals } });
+  assert.equal(writes, 1);
+  receive({ data: { type: 'terminals', terminals: [{ ...terminals[0], active: true }] } });
+  assert.equal(writes, 2, 'a change replaces the rows');
+  assert.match(html, /term-on/);
 });

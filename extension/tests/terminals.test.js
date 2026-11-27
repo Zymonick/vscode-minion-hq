@@ -112,10 +112,11 @@ test('a terminal that shows a tmux pane has its title and folder, read with one 
   ]);
 });
 
-test('Ctrl+PageDown and Ctrl+PageUp in a terminal follow the order of the Minion HQ rows, then opening order, and wrap around', () => {
+test('Ctrl+PageDown and Ctrl+PageUp in a terminal follow the order of the Minion HQ rows, then opening order, skip a hidden terminal and wrap around', () => {
   const f = fixture();
   const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((n) => f.terminal(n));
-  f.vscode.window.terminals.push(a, b, c, d);
+  const install = f.terminal('install', { creationOptions: { hideFromUser: true } });
+  f.vscode.window.terminals.push(a, install, b, c, d);
   f.list.order = [c, a, b].map((t) => f.list.track(t)).concat('terminal-gone');
   f.list.commands();
   const next = f.commands.get('scmDiffStats.terminal.focusNext'), previous = f.commands.get('scmDiffStats.terminal.focusPrevious');

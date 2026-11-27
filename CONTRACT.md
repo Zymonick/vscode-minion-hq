@@ -340,7 +340,9 @@ Claude sessions at their tab places:
 ## Terminals in rows
 
 The Minion HQ rows show every terminal of the window, also plain shells, so the
-terminal panel can hide its own tab list. A terminal belongs to a PR row when
+terminal panel can hide its own tab list. They skip a terminal that an
+extension created with `hideFromUser`, such as the `install` terminal in which
+Remote-SSH holds the window's SSH connection on the laptop. A terminal belongs to a PR row when
 that row's Claude or Codex control opened it, when its label starts with the
 PR number, such as `✳ pr-7 …` or `Claude pr-7`, or when its folder is in the
 PR worktree. A PR row shows a mark for each of its terminals before the Claude
@@ -374,7 +376,8 @@ In a terminal of the panel, Ctrl+PageDown and Ctrl+PageUp (Cmd+Shift+] and
 Cmd+Shift+[ on a Mac) run Minion HQ's `Focus Next Terminal` and `Focus Previous
 Terminal`, which replace VS Code's group commands on these keys: they show the
 next or previous terminal in the order of the rows, then the terminals that the
-rows do not show yet in opening order, and wrap around. Without an active
+rows do not show yet in opening order, and wrap around. They skip a
+`hideFromUser` terminal. Without an active
 terminal they start at the first or last terminal.
 
 ## Background Claude sessions

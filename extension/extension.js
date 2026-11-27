@@ -1435,6 +1435,7 @@ let loading = true;
 let agents = {};
 let terminals = [];
 let sentOrder = null;
+let shownHtml = null;
 const commitFiles = {};
 const pendingCommitFiles = new Set();
 const state = vscode.getState() || { collapsed: {} };
@@ -1655,10 +1656,19 @@ function groupRank(r) {
   return key === null ? '0' : key === POSTPONED ? '3' : key ? '1' + key.toLowerCase() : '2';
 }
 
+// A refresh publishes each row as its scan ends, several times a second. Only
+// a change replaces the rows: a new element under the pointer between
+// mousedown and mouseup loses the click.
+function show(root, h) {
+  if (h === shownHtml) return;
+  shownHtml = h;
+  root.innerHTML = h;
+}
+
 function render() {
   const root = document.getElementById('root');
   if (!repos.length) {
-    root.innerHTML = '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>';
+    show(root, '<div class="empty">' + (loading ? 'Loading repositories…' : 'No git repositories found.') + '</div>');
     return;
   }
   const grouped = repos.some((r) => r.group || r.postponed);
@@ -1798,7 +1808,7 @@ function render() {
       }
     }
   }
-  root.innerHTML = h;
+  show(root, h);
 }
 
 // The leading mark of a terminal name, such as Claude's ✳ or ◐, or a prompt.
@@ -2916,7 +2926,7 @@ class StatsViewProvider {
     if (!list) return [];
     const prs = [...this.data.values()].filter((r) => r.pr);
     const active = vscode.window.activeTerminal;
-    return vscode.window.terminals.map((t) => {
+    return userTerminals().map((t) => {
       const key = list.track(t), look = list.look(t);
       return { key, name: look.label, repoPath: terminalPr(t, look, prs), active: t === active, claude: runsClaude(t, look) };
     });
@@ -3095,6 +3105,13 @@ function tmuxAttachOf(argv) {
   return at > 0 && t > at && argv[t + 1] ? { socket: argv.slice(1, at), target: argv[t + 1] } : null;
 }
 
+// The terminals that the user works in. An extension can create a terminal
+// with hideFromUser, such as the «install» terminal in which Remote-SSH holds
+// the window's SSH connection on the laptop; the rows and the cycling skip it.
+function userTerminals() {
+  return vscode.window.terminals.filter((t) => !(t.creationOptions && t.creationOptions.hideFromUser));
+}
+
 class TerminalList {
   constructor() {
     this.pids = new WeakMap();
@@ -3119,7 +3136,7 @@ class TerminalList {
   // Ctrl+PageDown and Ctrl+PageUp in a terminal follow the terminals in the
   // order the Minion HQ rows show them, then the others in opening order.
   focusNext(step) {
-    const all = vscode.window.terminals;
+    const all = userTerminals();
     const shown = this.order.map((key) => all.find((t) => this.ids.get(t) === key)).filter(Boolean);
     const rows = [...shown, ...all.filter((t) => !shown.includes(t))];
     if (!rows.length) return;
